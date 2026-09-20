@@ -3,8 +3,12 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from kama_claude.core.bus.commands import PingCommand, PongResult
-from kama_claude.core.bus.events import CoreStartedEvent
+from jarvis.core.bus.commands import (
+    PermissionSetModeCommand,
+    PingCommand,
+    PongResult,
+)
+from jarvis.core.bus.events import CoreStartedEvent
 
 
 # 功能：验证 PingCommand 序列化后再反序列化，client 和 type 字段完整保留
@@ -33,10 +37,18 @@ def test_ping_command_missing_client_raises() -> None:
 # 功能：验证 PongResult 序列化往返后所有字段完整保留
 # 设计：与 PingCommand 对称，测试命令-响应对的两端序列化，确认 int 和 str 字段类型在往返中不变
 def test_pong_result_roundtrip() -> None:
-    pong = PongResult(server_version="0.0.1", uptime_ms=42, received_at="2026-05-11T00:00:00Z")
+    pong = PongResult(
+        server_version="0.0.1",
+        uptime_ms=42,
+        received_at="2026-05-11T00:00:00Z",
+        pid=1234,
+        workspace="D:/work/demo",
+    )
     pong2 = PongResult.model_validate(pong.model_dump())
     assert pong2.server_version == "0.0.1"
     assert pong2.uptime_ms == 42
+    assert pong2.pid == 1234
+    assert pong2.workspace == "D:/work/demo"
 
 
 # 功能：验证 CoreStartedEvent 序列化往返后 listen_addr 和 type 字段正确保留
@@ -46,3 +58,13 @@ def test_core_started_event_roundtrip() -> None:
     evt2 = CoreStartedEvent.model_validate_json(evt.model_dump_json())
     assert evt2.listen_addr == "127.0.0.1:7437"
     assert evt2.type == "core.started"
+
+
+# 功能：验证 session 权限模式命令可在 IPC wire format 中完整往返
+def test_permission_set_mode_command_roundtrip() -> None:
+    cmd = PermissionSetModeCommand(session_id="sess-1", mode="auto")
+    restored = PermissionSetModeCommand.model_validate_json(cmd.model_dump_json())
+
+    assert restored.type == "permission.set_mode"
+    assert restored.session_id == "sess-1"
+    assert restored.mode == "auto"

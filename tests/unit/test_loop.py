@@ -5,12 +5,12 @@ import asyncio
 import pytest
 from pydantic import BaseModel
 
-from kama_claude.core.context import ExecutionContext
-from kama_claude.core.events.bus import EventBus
-from kama_claude.core.llm.types import LlmResponse, ToolCallBlock
-from kama_claude.core.loop import AgentLoop
-from kama_claude.core.tools.base import BaseTool, ToolResult
-from kama_claude.core.tools.registry import ToolRegistry
+from jarvis.core.context import ExecutionContext
+from jarvis.core.events.bus import EventBus
+from jarvis.core.llm.types import LlmResponse, ToolCallBlock
+from jarvis.core.loop import AgentLoop
+from jarvis.core.tools.base import BaseTool, ToolResult
+from jarvis.core.tools.registry import ToolRegistry
 
 # --- stubs -------------------------------------------------------------------
 
@@ -107,17 +107,17 @@ async def test_end_turn_marks_success() -> None:
     assert ctx.step == 1
 
 
-# 功能：验证达到 max_steps 时 loop 以 exceeded_max_steps 原因将 context 标记为 failed
-# 设计：设置 max_steps=2 + 无限 tool_use provider，同时验证 step 数量和失败原因，确认计数器与终止逻辑联动正确
-async def test_max_steps_marks_failed() -> None:
+# 功能：验证达到工具步数预算后追加一次无工具总结，而不是丢弃已有结果
+async def test_max_steps_gets_finalization_turn() -> None:
     tc = _tc("unknown", {})
     provider = _MockProvider([LlmResponse(stop_reason="tool_use", tool_calls=[tc])] * 10)
     loop, _ = _make_loop(provider)
     ctx = _ctx(max_steps=2)
     await loop.run(ctx)
-    assert ctx.status == "failed"
-    assert ctx.reason == "exceeded_max_steps"
-    assert ctx.step == 2
+    assert ctx.status == "success"
+    assert ctx.reason is None
+    assert ctx.step == 3
+    assert "tool-step limit" in ctx.result
 
 
 # 功能：验证"调工具 → end_turn"的两步路径最终标记为 success

@@ -4,9 +4,9 @@
 
 ## Transport
 
-- TCP loopback `127.0.0.1:7437` (override via `KAMA_HOST` / `KAMA_PORT`)
+- TCP loopback `127.0.0.1:7437` (override via `JARVIS_HOST` / `JARVIS_PORT`)
 - Each message is one `\n`-terminated JSON line (NDJSON)
-- Commands use JSON-RPC 2.0 (client â†’ server); Events use `kind=event` envelope (server â†’ client)
+- Commands use JSON-RPC 2.0 (client ¡ú server); Events use `kind=event` envelope (server ¡ú client)
 
 ## Commands
 
@@ -61,6 +61,8 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `server_version` | `string` | yes |
 | `uptime_ms` | `integer` | yes |
 | `received_at` | `string` | yes |
+| `pid` | `integer` | no |
+| `workspace` | `string` | no |
 
 ```json
 {
@@ -75,6 +77,16 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
     },
     "received_at": {
       "title": "Received At",
+      "type": "string"
+    },
+    "pid": {
+      "default": 0,
+      "title": "Pid",
+      "type": "integer"
+    },
+    "workspace": {
+      "default": "",
+      "title": "Workspace",
       "type": "string"
     }
   },
@@ -631,7 +643,7 @@ Events pushed from daemon to subscribed clients over the same TCP connection.
 
 ## IPC Events
 
-Events sent over the IPC socket (daemon â†’ client).
+Events sent over the IPC socket (daemon ¡ú client).
 
 ### CoreStartedEvent
 
@@ -1379,7 +1391,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
   "type": "log.line",
   "run_id": "20260516-100000-abc123",
   "level": "INFO",
-  "source": "kama_claude.core.loop",
+  "source": "jarvis.core.loop",
   "message": "step 1 started",
   "ts": "2026-05-16T10:00:00.001Z"
 }

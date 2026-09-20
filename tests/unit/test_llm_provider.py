@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pydantic import BaseModel
 
-from kama_claude.core.events.bus import EventBus
-from kama_claude.core.llm.provider import AnthropicProvider
-from kama_claude.core.llm.types import LlmResponse
+from jarvis.core.config import LlmConfig
+from jarvis.core.events.bus import EventBus
+from jarvis.core.llm.provider import (
+    AnthropicProvider,
+    DeepSeekProvider,
+    create_llm_provider,
+)
+from jarvis.core.llm.types import LlmResponse
 
 # --- helpers -----------------------------------------------------------------
 
@@ -201,3 +206,48 @@ async def test_no_tokens_when_response_is_empty() -> None:
     tokens = [e for e in events if e.type == "llm.token"]  # type: ignore[attr-defined]
     assert tokens == []
     assert result.text == ""
+
+
+# 功能：验证 DeepSeek provider 缺少密钥时立即失败
+def test_deepseek_missing_api_key_raises_system_exit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("DEEPSEEK_API_KEY", raising=False)
+    with pytest.raises(SystemExit, match="DEEPSEEK_API_KEY not set"):
+        DeepSeekProvider(model="deepseek-flash")
+
+
+# 功能：验证 DeepSeek provider 使用官方 Anthropic 兼容端点
+def test_deepseek_provider_builds_anthropic_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    monkeypatch.delenv("DEEPSEEK_BASE_URL", raising=False)
+    client = MagicMock()
+    with patch("jarvis.core.llm.provider.anthropic.AsyncAnthropic", return_value=client) as ctor:
+        provider = DeepSeekProvider(model="deepseek-flash")
+
+    ctor.assert_called_once_with(
+        api_key="test-key",
+        base_url="https://api.deepseek.com/anthropic",
+    )
+    assert provider._client is client
+
+
+# 功能：验证 provider factory 根据配置选择 DeepSeek
+def test_provider_factory_selects_deepseek(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    config = LlmConfig(provider="deepseek", default_model="deepseek-flash")
+
+    with patch("jarvis.core.llm.provider.anthropic.AsyncAnthropic"):
+        provider = create_llm_provider(config)
+
+    assert isinstance(provider, DeepSeekProvider)
+
+
+# 功能：验证未知 provider 会给出明确配置错误
+def test_provider_factory_rejects_unknown_provider() -> None:
+    config = LlmConfig(provider="unknown", default_model="model")
+
+    with pytest.raises(SystemExit, match="Unsupported LLM provider"):
+        create_llm_provider(config)

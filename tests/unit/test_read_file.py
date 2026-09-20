@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kama_claude.core.tools.builtin.read_file import ReadFileTool
+from jarvis.core.tools.builtin.read_file import ReadFileTool
 
 
 # 功能：验证读取存在的文件时返回完整内容且 is_error 为 False
@@ -69,3 +69,17 @@ async def test_empty_file_returns_empty_content(tmp_path: Path) -> None:
     result = await ReadFileTool().invoke({"path": str(f)})
     assert not result.is_error
     assert result.content == ""
+
+
+# 功能：验证可按 1-based 行号读取大文件的局部范围
+async def test_read_file_line_range(tmp_path: Path) -> None:
+    f = tmp_path / "lines.txt"
+    f.write_text("one\ntwo\nthree\nfour\n", encoding="utf-8")
+
+    result = await ReadFileTool().invoke({
+        "path": str(f),
+        "start_line": 2,
+        "end_line": 3,
+    })
+
+    assert result.content == "2: two\n3: three"
