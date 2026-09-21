@@ -32,6 +32,8 @@ async def test_ping_returns_pong(
     assert resp["result"]["server_version"] == "0.0.1"
     assert resp["result"]["uptime_ms"] >= 0
     assert "received_at" in resp["result"]
+    assert resp["result"]["pid"] > 0
+    assert resp["result"]["workspace"]
 
 
 # 功能：验证调用未注册方法时 daemon 返回 METHOD_NOT_FOUND 错误码（-32601）

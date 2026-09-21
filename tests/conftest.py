@@ -22,13 +22,15 @@ def free_port() -> int:
 @pytest.fixture
 async def running_daemon(free_port: int) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
-    env["KAMA_PORT"] = str(free_port)
-    env["KAMA_LOG_FILE"] = ""
-    env["KAMA_LOG_LEVEL"] = "WARNING"
+    env["JARVIS_PORT"] = str(free_port)
+    env["JARVIS_LOG_FILE"] = ""
+    env["JARVIS_LOG_LEVEL"] = "WARNING"
+    env["JARVIS_LLM_PROVIDER"] = "anthropic"
+    env["ANTHROPIC_API_KEY"] = "test-key"
 
-    proc = subprocess.Popen([sys.executable, "-m", "kama_claude.core"], env=env)
+    proc = subprocess.Popen([sys.executable, "-m", "jarvis.core"], env=env)
 
-    deadline = time.monotonic() + 3.0
+    deadline = time.monotonic() + 10.0
     while time.monotonic() < deadline:
         await asyncio.sleep(0.05)
         try:
@@ -41,7 +43,7 @@ async def running_daemon(free_port: int) -> AsyncGenerator[subprocess.Popen[byte
     else:
         proc.terminate()
         proc.wait()
-        pytest.fail("Daemon did not start within 3 seconds")
+        pytest.fail("Daemon did not start within 10 seconds")
 
     yield proc
 

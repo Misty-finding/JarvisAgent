@@ -1,35 +1,103 @@
 # 运维手册（RUNBOOK）
 
-## 日常操作
+## 一条命令启动
 
-### 启动守护进程
+首次在 Jarvis 仓库中安装全局命令：
 
-```bash
-uv run kama-core
+```powershell
+uv tool install --editable .
 ```
 
-默认监听 `127.0.0.1:7437`，按 `Ctrl+C` 优雅退出。
+之后进入任意代码仓库，只需要：
+
+```powershell
+cd D:\path\to\your-project
+jarvis
+```
+
+`jarvis` 会自动完成以下工作：
+
+1. 把当前目录设为 Agent workspace。
+2. 创建项目级 `.jarvis/` 目录。
+3. 为当前项目复用或启动独立的 `jarvis-core`。
+4. 端口被其他项目占用时自动选择空闲端口。
+5. 等待 Core 健康检查通过后直接打开 TUI。
+
+项目级运行状态写入 `.jarvis/runtime/`，会话写入 `.jarvis/sessions/`；这两个目录
+默认由 `.jarvis/.gitignore` 忽略。`config.toml`、`context.md`、`skills/` 等项目资料
+不会被忽略。
+
+## Skills
+
+输入 `/` 时，TUI 会展示当前 workspace 可用的 Skill 候选项。Skill 只会在发送
+`/skill-name` 后执行，不会因为输入 `/` 就自动运行。
+
+Skill 搜索优先级为：
+
+```text
+项目 .jarvis/skills/
+→ C:\Users\23148\.jarvis\skills\
+→ Jarvis 内建 skills（src/jarvis/core/skills/builtin/）
+```
+
+通用 Skill 放在：
+
+```text
+C:\Users\23148\.jarvis\skills\
+```
+
+项目特定 Skill 放在：
+
+```text
+当前项目\.jarvis\skills\
+```
+
+Skill 可以是扁平文件 `name.md`，也可以是目录式
+`name\SKILL.md`。完整 frontmatter、`allowed_tools` 和覆盖规则见
+`studydocs/SKILLS_GUIDE.md`。
+
+DeepSeek 等 API 配置可以放到全局文件，配置一次后所有项目共用：
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.jarvis" | Out-Null
+Copy-Item .env "$HOME\.jarvis\.env"
+```
+
+也可以只在某个项目根目录放置 `.env`，项目配置会覆盖全局配置。
+
+## 日常操作
+
+### 启动当前项目
+
+```powershell
+jarvis
+```
+
+直接进入 TUI；无需手动启动 Core。
+
+### 管理当前项目 Core
+
+```powershell
+jarvis core status
+jarvis core start
+jarvis core stop
+```
 
 ### 验证连通
 
-```bash
-uv run kama ping
+```powershell
+jarvis ping
 # → pong server=0.0.1 uptime=12ms latency=2ms
-```
-
-### 停止守护进程
-
-```bash
-kill $(pgrep -f kama-core)
 ```
 
 ---
 
 ## 配置
 
-优先级（低 → 高）：**内建默认值 → `~/.kama/config.toml` → `.env` → 系统环境变量**。
+优先级（低 → 高）：**内建默认值 → `~/.jarvis/config.toml` →
+`~/.jarvis/.env` → 项目 `.jarvis/config.toml` → 项目 `.env` → 系统环境变量**。
 
-### `~/.kama/config.toml`
+### `~/.jarvis/config.toml`
 
 ```toml
 [core]
@@ -38,7 +106,7 @@ port = 7437
 
 [logging]
 level  = "INFO"
-file   = "~/.kama/logs/core.log"
+file   = "~/.jarvis/logs/core.log"
 format = "text"    # "text" | "json"
 ```
 
@@ -54,12 +122,22 @@ cp .env.example .env
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `KAMA_CONFIG` | `~/.kama/config.toml` | 覆盖配置文件路径 |
-| `KAMA_HOST` | `127.0.0.1` | TCP 监听地址 |
-| `KAMA_PORT` | `7437` | TCP 监听端口 |
-| `KAMA_LOG_LEVEL` | `INFO` | 日志级别（DEBUG / INFO / WARNING / ERROR） |
-| `KAMA_LOG_FILE` | `~/.kama/logs/core.log` | 日志文件路径（留空则仅输出 stderr） |
-| `KAMA_LOG_FORMAT` | `text` | 日志格式（`text` 或 `json`） |
+| `JARVIS_CONFIG` | `~/.jarvis/config.toml` | 覆盖配置文件路径 |
+| `JARVIS_WORKSPACE_ROOT` | 当前目录 | 启动器传给 Core 的 workspace，通常无需手动设置 |
+| `JARVIS_HOST` | `127.0.0.1` | TCP 监听地址 |
+| `JARVIS_PORT` | `7437` | TCP 监听端口 |
+| `JARVIS_LOG_LEVEL` | `INFO` | 日志级别（DEBUG / INFO / WARNING / ERROR） |
+| `JARVIS_LOG_FILE` | `~/.jarvis/logs/core.log` | 日志文件路径（留空则仅输出 stderr） |
+| `JARVIS_LOG_FORMAT` | `text` | 日志格式（`text` 或 `json`） |
+| `JARVIS_LLM_PROVIDER` | `anthropic` | LLM provider（`anthropic` 或 `deepseek`） |
+| `JARVIS_LLM_DEFAULT_MODEL` | `claude-sonnet-4-6` | 默认模型名 |
+| `JARVIS_LLM_BASE_URL` | provider 默认地址 | 可选 API base URL |
+| `DEEPSEEK_API_KEY` | 无 | DeepSeek provider API key |
+| `ANTHROPIC_API_KEY` | 无 | Anthropic provider API key |
+| `JARVIS_MAX_STEPS` | `60` | 单次 Agent run 工具步骤预算，耗尽后额外总结一次 |
+| `JARVIS_TRACE_ENABLED` | `true` | 是否启用 trace |
+| `JARVIS_TRACE_INCLUDE_LLM_PAYLOAD` | `true` | trace 是否记录完整 LLM 请求和响应 |
+| `JARVIS_PERMISSION_TIMEOUT_S` | `60` | 工具权限审批超时秒数 |
 
 ---
 
@@ -79,8 +157,8 @@ make verify-s0                        # 完整验证（lint + 类型 + 测试 + 
 
 ## 日志
 
-```bash
-tail -f ~/.kama/logs/core.log
+```powershell
+Get-Content "$HOME\.jarvis\logs\core.log" -Wait
 ```
 
 ---
@@ -89,7 +167,6 @@ tail -f ~/.kama/logs/core.log
 
 | 报错 | 原因 | 处理 |
 |------|------|------|
-| `core already running at 127.0.0.1:7437` | 已有守护进程在运行 | `kill $(pgrep -f kama-core)` |
-| `core not running` | 未启动守护进程 | `uv run kama-core` |
-| `Address already in use` | 端口被其他进程占用 | `KAMA_PORT=8000 uv run kama-core` |
-| `Config error: KAMA_PORT must be an integer` | `.env` 或环境变量中端口值非整数 | 检查 `KAMA_PORT` 的值 |
+| `core not running` | 当前项目 daemon 未启动 | 执行 `jarvis` 或 `jarvis core start` |
+| 默认端口已占用 | 另一个项目或程序使用了 7437 | `jarvis` 会自动选择空闲端口 |
+| `Config error: JARVIS_PORT must be an integer` | `.env` 或环境变量中端口值非整数 | 检查 `JARVIS_PORT` 的值 |

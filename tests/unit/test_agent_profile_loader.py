@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from kama_claude.core.agents.loader import AgentProfileLoader
+from jarvis.core.agents.loader import AgentProfileLoader
 
 
 # 功能：内建 planner 角色配置应能被 AgentProfileLoader 加载
@@ -59,9 +59,9 @@ model = "claude-sonnet-4-6"
 
 
 # 功能：项目本地角色配置应覆盖内建同名配置
-# 设计：在 .kama/agents/ 中写入同名 TOML，monkeypatch cwd，断言加载到本地版本
+# 设计：在 .jarvis/agents/ 中写入同名 TOML，monkeypatch cwd，断言加载到本地版本
 def test_project_overrides_builtin(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    local_agents = tmp_path / ".kama" / "agents"
+    local_agents = tmp_path / ".jarvis" / "agents"
     local_agents.mkdir(parents=True)
     (local_agents / "planner.toml").write_text(
         '[agent]\ndescription = "local planner"\nsystem_prompt = "local prompt"\n'
@@ -74,3 +74,25 @@ def test_project_overrides_builtin(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert profile is not None
     assert profile.description == "local planner"
     assert "list_dir" in profile.allowed_tools
+
+
+def test_explicit_workspace_finds_project_role_from_another_cwd(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    caller = tmp_path / "caller"
+    local_agents = project / ".jarvis" / "agents"
+    local_agents.mkdir(parents=True)
+    caller.mkdir()
+    (local_agents / "planner.toml").write_text(
+        '[agent]\ndescription = "workspace planner"\nsystem_prompt = "workspace prompt"\n'
+        'allowed_tools = ["list_dir"]\n',
+        encoding="utf-8",
+    )
+
+    monkeypatch.chdir(caller)
+    profile = AgentProfileLoader(workspace=project).load("planner")
+
+    assert profile is not None
+    assert profile.description == "workspace planner"

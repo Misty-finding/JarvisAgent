@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
 
-from kama_claude.core.tools.builtin.bash import BashTool
-from kama_claude.core.tools.builtin.list_dir import ListDirTool
-from kama_claude.core.tools.builtin.write_file import WriteFileTool
+from jarvis.core.tools.builtin.bash import BashTool
+from jarvis.core.tools.builtin.list_dir import ListDirTool
+from jarvis.core.tools.builtin.write_file import WriteFileTool
 
 # ── bash ──────────────────────────────────────────────────────────────────────
 
@@ -41,9 +42,23 @@ async def test_bash_timeout() -> None:
 # 设计：只写 stderr 的命令（>&2 echo），输出应该出现在合并后的 content 里
 @pytest.mark.asyncio
 async def test_bash_stderr_merged() -> None:
-    result = await BashTool().invoke({"command": "echo err >&2"})
+    command = (
+        "[Console]::Error.WriteLine('err')"
+        if os.name == "nt"
+        else "echo err >&2"
+    )
+    result = await BashTool().invoke({"command": command})
     assert not result.is_error
     assert "err" in result.content
+
+
+@pytest.mark.asyncio
+async def test_bash_preserves_unicode_output() -> None:
+    command = "Write-Output '中文测试'" if os.name == "nt" else "printf '中文测试'"
+    result = await BashTool().invoke({"command": command})
+
+    assert not result.is_error
+    assert "中文测试" in result.content
 
 
 # ── write_file ────────────────────────────────────────────────────────────────

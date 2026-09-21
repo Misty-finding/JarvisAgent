@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from kama_claude.core.context import ExecutionContext
+from jarvis.core.context import ExecutionContext
 
 
 def _make_ctx(**kwargs) -> ExecutionContext:
@@ -50,3 +50,12 @@ def test_session_notes_hint() -> None:
     ctx = _make_ctx(session_notes="some note")
     prompt = ctx.system_prompt("BASE")
     assert "note_save" in prompt
+
+
+# 功能：验证角色提示不会覆盖运行时平台规则
+def test_role_override_is_appended_after_base_prompt() -> None:
+    ctx = _make_ctx(system_prompt_override="ROLE RULES")
+    prompt = ctx.system_prompt("WINDOWS RUNTIME RULES")
+
+    assert prompt.startswith("WINDOWS RUNTIME RULES")
+    assert "## Task-specific Role Instructions\nROLE RULES" in prompt

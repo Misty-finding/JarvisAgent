@@ -1,19 +1,18 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 import pytest
 
-from kama_claude.core.permissions.manager import PermissionManager
-from kama_claude.core.permissions.policy import PermissionDecision, ToolPolicy
-from kama_claude.core.permissions.storage import load_policy_file
+from jarvis.core.permissions.manager import PermissionManager
+from jarvis.core.permissions.policy import PermissionDecision, ToolPolicy
+from jarvis.core.permissions.storage import load_policy_file
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _make_manager(**policies: ToolPolicy) -> PermissionManager:
-    # policy_file=None：测试中不使用持久化，不污染 ~/.kama/policy.toml
+    # policy_file=None：测试中不使用持久化，不污染 ~/.jarvis/policy.toml
     return PermissionManager(policies or None)
 
 
@@ -277,6 +276,84 @@ async def test_cancel_session_only_affects_target_session() -> None:
 
     assert s1_result == [True]   # s1 was allowed
     assert s2_result == [False]  # s2 was cancelled → denied
+
+
+# ── session permission mode ───────────────────────────────────────────────────
+
+# 功能：验证 Auto 模式优先于 ASK、deny pattern 和 outside-cwd 策略，且不发审批事件
+async def test_auto_mode_bypasses_all_permission_checks() -> None:
+    mgr = _make_manager(
+        bash=ToolPolicy(
+            default=PermissionDecision.ASK,
+            deny_patterns=[r"rm\s+-rf"],
+        )
+    )
+    emitted, emitter = await _collect_emitted()
+    mgr.set_session_mode("s1", "auto")
+
+    for tool_use_id, command in (
+        ("auto-ask", "echo hi"),
+        ("auto-deny", "rm -rf build"),
+        ("auto-outside", "cat /etc/hosts"),
+    ):
+        allowed, decision = await mgr.check_and_wait(
+            tool_use_id=tool_use_id,
+            tool_name="bash",
+            params={"command": command},
+            session_id="s1",
+            event_emitter=emitter,
+        )
+        assert allowed is True
+        assert decision == "auto_allow"
+
+    assert emitted == []
+
+
+# 功能：验证从 Ask 切换到 Auto 会立即放行当前 session 已挂起的审批
+async def test_switching_to_auto_resolves_pending_request() -> None:
+    mgr = _make_manager()
+    emitted, emitter = await _collect_emitted()
+    task = asyncio.create_task(mgr.check_and_wait(
+        tool_use_id="pending-auto",
+        tool_name="bash",
+        params={"command": "echo hi"},
+        session_id="s1",
+        event_emitter=emitter,
+    ))
+    await asyncio.sleep(0)
+
+    mgr.set_session_mode("s1", "auto")
+
+    allowed, decision = await task
+    assert allowed is True
+    assert decision == "allow_once"
+    assert len(emitted) == 1
+
+
+# 功能：验证 session 关闭后 Auto 模式被清理，新请求恢复 Ask
+async def test_cancel_session_clears_auto_mode() -> None:
+    mgr = _make_manager()
+    mgr.set_session_mode("s1", "auto")
+    mgr.cancel_session("s1")
+    emitted, emitter = await _collect_emitted()
+
+    async def _deny_after_emit() -> None:
+        await asyncio.sleep(0)
+        mgr.respond("after-close", "deny_once")
+
+    responder = asyncio.create_task(_deny_after_emit())
+    allowed, decision = await mgr.check_and_wait(
+        tool_use_id="after-close",
+        tool_name="bash",
+        params={"command": "echo hi"},
+        session_id="s1",
+        event_emitter=emitter,
+    )
+    await responder
+
+    assert allowed is False
+    assert decision == "deny_once"
+    assert len(emitted) == 1
 
 
 # ── respond: unknown tool_use_id ──────────────────────────────────────────────

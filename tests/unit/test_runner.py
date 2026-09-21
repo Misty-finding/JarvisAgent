@@ -5,10 +5,10 @@ from pathlib import Path
 
 from pydantic import BaseModel
 
-from kama_claude.core.config import KamaConfig
-from kama_claude.core.events.bus import EventBus
-from kama_claude.core.llm.types import LlmResponse, ToolCallBlock
-from kama_claude.core.runner import AgentRunner
+from jarvis.core.config import JarvisConfig
+from jarvis.core.events.bus import EventBus
+from jarvis.core.llm.types import LlmResponse, ToolCallBlock
+from jarvis.core.runner import AgentRunner
 
 # --- mock provider -----------------------------------------------------------
 
@@ -76,8 +76,8 @@ class _CapturingProvider:
 # --- helpers -----------------------------------------------------------------
 
 
-def _config(max_steps: int = 5) -> KamaConfig:
-    cfg = KamaConfig()
+def _config(max_steps: int = 5) -> JarvisConfig:
+    cfg = JarvisConfig()
     cfg.agent.max_steps = max_steps
     return cfg
 
@@ -86,7 +86,7 @@ async def _run(
     goal: str = "test goal",
     *,
     provider: object | None = None,
-    config: KamaConfig | None = None,
+    config: JarvisConfig | None = None,
     tmp_path: Path,
 ) -> list[BaseModel]:
     collected: list[BaseModel] = []
@@ -129,17 +129,16 @@ async def test_run_finished_event_published_on_success(tmp_path: Path) -> None:
     assert finished.status == "success"  # type: ignore[attr-defined]
 
 
-# 功能：验证步数耗尽时 run.finished 携带 failed 状态和正确的失败原因
-# 设计：LoopingProvider + max_steps=2 触发失败路径，确认 runner 在失败终止路径同样发布 finished 事件
-async def test_run_finished_event_published_on_max_steps(tmp_path: Path) -> None:
+# 功能：验证步数预算耗尽后 run 通过最终总结正常结束
+async def test_run_finished_event_published_after_step_finalization(tmp_path: Path) -> None:
     events = await _run(
         provider=_LoopingProvider(),
         config=_config(max_steps=2),
         tmp_path=tmp_path,
     )
     finished = next(e for e in events if e.type == "run.finished")  # type: ignore[attr-defined]
-    assert finished.status == "failed"  # type: ignore[attr-defined]
-    assert finished.reason == "exceeded_max_steps"  # type: ignore[attr-defined]
+    assert finished.status == "success"  # type: ignore[attr-defined]
+    assert finished.reason is None  # type: ignore[attr-defined]
 
 
 # 功能：验证 events.jsonl 第一行为 run.started、最后一行为 run.finished
@@ -182,12 +181,11 @@ async def test_extra_handlers_receive_events(tmp_path: Path) -> None:
     assert len(secondary) > 0
 
 
-# 功能：验证 config.agent.max_steps 被正确传递给 AgentLoop，控制 LLM 调用次数上限
-# 设计：用 LoopingProvider 的调用次数反推 max_steps 是否生效，不依赖内部状态检查，从行为角度验证配置传递
+# 功能：验证 max_steps 控制工具回合数，并额外保留一次最终总结调用
 async def test_config_max_steps_passed_to_loop(tmp_path: Path) -> None:
     provider = _LoopingProvider()
     await _run(provider=provider, config=_config(max_steps=3), tmp_path=tmp_path)
-    assert provider._call == 3
+    assert provider._call == 4
 
 
 # 功能：验证 run.started 和 run.finished 事件使用相同且非空的 run_id
@@ -204,7 +202,7 @@ async def test_run_id_embedded_in_started_event(tmp_path: Path) -> None:
 # 设计：显式传入 EventBus 实例并订阅收集器，确认 runner 不再内部新建 bus（否则外部订阅者收不到事件）；
 #       这是 CoreApp 注入全局 bus 的核心行为，单元测试级别验证可避免集成测试的守护进程依赖
 async def test_injected_bus_receives_events(tmp_path: Path) -> None:
-    from kama_claude.core.events.bus import EventBus
+    from jarvis.core.events.bus import EventBus
 
     external_bus = EventBus()
     collected: list[object] = []
@@ -230,8 +228,8 @@ async def test_injected_bus_receives_events(tmp_path: Path) -> None:
 # 功能：验证 session run 会从 thread.jsonl 预填 messages，并把 notes 注入 system prompt
 # 设计：用 CapturingProvider 截获 LLM 入参，不触发真实 API；同时断言 run 目录写到 session/runs 下
 async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
-    from kama_claude.core.session.model import Session
-    from kama_claude.core.session.store import SessionStore
+    from jarvis.core.session.model import Session
+    from jarvis.core.session.store import SessionStore
 
     store = SessionStore(tmp_path / "sessions")
     session = Session(
@@ -261,8 +259,8 @@ async def test_session_history_and_notes_injected(tmp_path: Path) -> None:
 # 功能：验证 session run 中注册了 note_save，工具调用会写入 notes.md
 # 设计：mock provider 第一步请求 note_save、第二步 end_turn，覆盖 runner→registry→tool invocation 的完整路径
 async def test_session_registers_note_save_tool(tmp_path: Path) -> None:
-    from kama_claude.core.session.model import Session
-    from kama_claude.core.session.store import SessionStore
+    from jarvis.core.session.model import Session
+    from jarvis.core.session.store import SessionStore
 
     class _NoteProvider:
         # 初始化调用计数器，用于返回两步响应
