@@ -1,0 +1,30 @@
+[core]
+host = "127.0.0.1"
+port = 7437
+
+[llm]
+provider = "deepseek"
+default_model = "deepseek-flash"
+base_url = "https://api.deepseek.com/anthropic"
+router = "static"
+
+[agent]
+max_steps = 60
+
+[logging]
+level = "INFO"
+file = "~/.jarvis/logs/core.log"
+format = "text"
+
+[trace]
+enabled = true
+file = "~/.jarvis/traces/daemon.jsonl"
+include_llm_payload = false
+
+[permission]
+timeout_s = 60
+
+[compaction]
+auto_threshold = 0.0
+tool_result_limit = 8000
+tool_result_keep = 4000
