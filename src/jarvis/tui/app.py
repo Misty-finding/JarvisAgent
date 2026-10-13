@@ -15,6 +15,7 @@ from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
+from textual.content import Content
 from textual.css.query import NoMatches
 from textual.message import Message
 from textual.selection import Selection
@@ -30,6 +31,33 @@ log = logging.getLogger(__name__)
 
 def _preview(s: str, n: int) -> str:
     return s[:n] + "…" if len(s) > n else s
+
+
+# 转义外部文本（模型输出、工具参数/输出、日志、用户输入），禁止被当成 Textual/Rich markup 解析。
+# 模型输出里常出现 [xxx]、[/dim]、Markdown 片段和反引号，未转义会被 Textual 当成标签：
+# 轻则该行渲染异常，重则抛到 Textual 事件循环里让整个 TUI 退出。
+# 这里给每个 [ 加反斜杠（Textual 只在 (?<!\)\[ 时才进入标签状态）；
+# 不能用 rich.markup.escape：它只处理“[ 后跟 [a-z#/@]”且会把反斜杠翻倍（Textual 不还原）。
+def _esc(value: Any) -> str:
+    return str(value).replace("[", "\\[")
+
+
+# 渲染整块不可信文本：优先用带标签的 markup 文本，失败时退化为纯文本。
+# 保证异常不逃出 widget 事件回调（Textual 对未处理异常会直接结束 App）。
+def _update_markup_or_plain(widget: Static, markup_text: str, plain_text: str) -> None:
+    try:
+        widget.update(markup_text)
+    except Exception:
+        log.exception("markup render failed; falling back to plain text")
+        widget.update(Text(plain_text))
+
+
+# 渲染类异常（markup/style/visual 解析失败）只影响显示，不该终止整个 TUI。
+def _is_render_error(error: BaseException) -> bool:
+    for cls in type(error).__mro__:
+        if cls.__name__ in {"MarkupError", "StyleSyntaxError", "VisualError"}:
+            return True
+    return False
 
 
 def _read_windows_clipboard() -> str | None:
@@ -88,7 +116,11 @@ def _read_windows_clipboard() -> str | None:
         user32.CloseClipboard()
 
 def _params_str(params: dict[str, Any]) -> str:
-    return json.dumps(params, ensure_ascii=False, indent=2)
+    try:
+        return json.dumps(params, ensure_ascii=False, indent=2)
+    except (TypeError, ValueError):
+        # 参数里出现无法序列化的对象时也要能展示，不能拖垮整个工具块
+        return str(params)
 
 
 # 从工具参数中提取最适合摘要展示的关键字段
@@ -102,6 +134,9 @@ def _param_summary(tool_name: str, params: dict[str, Any], max_len: int = 72) ->
         "bash": ("command",),
         "note_save": ("content",),
     }
+    if not isinstance(params, dict):
+        # 兼容旧事件/异常参数：params 不是 dict 时退化为整段预览
+        return _preview(str(params), max_len)
     keys = keys_by_tool.get(tool_name, ())
     parts = [f"{key}={params[key]!r}" for key in keys if key in params]
     if not parts:
@@ -124,11 +159,15 @@ class SelectableStatic(Static):
     def get_selection(self, selection: Selection) -> tuple[str, str] | None:
         if not self._selection_source:
             return None
-        try:
-            text = Text.from_markup(self._selection_source, emoji=False)
-        except Exception:
-            text = Text(self._selection_source)
-        return selection.extract(str(text)), "\n"
+        if getattr(self, "_render_markup", True):
+            try:
+                # 与显示共用 Textual markup 解析器，保证复制出的文本与屏幕一致
+                text = Content.from_markup(self._selection_source).plain
+            except Exception:
+                text = self._selection_source
+        else:
+            text = self._selection_source
+        return selection.extract(text), "\n"
 
 
 class LLMStreamBlock(Static):
@@ -142,12 +181,14 @@ class LLMStreamBlock(Static):
 
     # 初始化为空文本块
     def __init__(self) -> None:
-        super().__init__("")
+        super().__init__("", markup=False)
         self._text = ""
         self._finalized = False
         self._rendered_text: Text | None = None
 
-    # 追加一个 token 并刷新显示
+    # 追加一个 token 并刷新显示。必须保持 markup=False + 纯字符串更新：
+    # 模型输出里的 [bold]、[/dim]、反引号一旦被当成 markup 解析就会抛 MarkupError
+    #（历史崩溃现场见 ~/.jarvis/logs/tui.log 的 llm.token 报错）。
     def append_token(self, token: str) -> None:
         if self._finalized:
             return
@@ -178,11 +219,16 @@ class LLMStreamBlock(Static):
             console = Console(width=80, color_system=None)
             options = console.options
             width = 80
-        lines = console.render_lines(
-            Markdown(self._text, code_theme="monokai"),
-            options.update(width=width, highlight=False),
-            pad=False,
-        )
+        try:
+            lines = console.render_lines(
+                Markdown(self._text, code_theme="monokai"),
+                options.update(width=width, highlight=False),
+                pad=False,
+            )
+        except Exception:
+            # Markdown 渲染失败（结构异常/非法代码块）时退化显示原文，不丢整条回答
+            log.exception("markdown render failed; falling back to plain text")
+            return Text(self._text)
         rendered = Text()
         for line_number, line in enumerate(lines):
             rendered_line = Text()
@@ -242,9 +288,9 @@ class ToolCallBlock(Widget):
             return f"  [green]remembered[/green]  [dim]{self._elapsed_ms}ms[/dim]"
 
         params_pre = _param_summary(self._tool_name, self._params)
-        line = f"  [dim]tool[/dim] [bold]{self._tool_name}[/bold]"
+        line = f"  [dim]tool[/dim] [bold]{_esc(self._tool_name)}[/bold]"
         if params_pre:
-            line += f"  [dim]{params_pre}[/dim]"
+            line += f"  [dim]{_esc(params_pre)}[/dim]"
         if self._finished:
             color = "red" if self._is_error else "green"
             status = "failed" if self._is_error else "done"
@@ -259,22 +305,45 @@ class ToolCallBlock(Widget):
         self._is_error = is_error
         self._finished = True
         if self.children:
-            self.query_one(".summary", SelectableStatic).update(self._summary())
+            try:
+                self.query_one(".summary", SelectableStatic).update(self._summary())
+            except NoMatches:
+                pass
+            except Exception:
+                # 摘要渲染失败不能影响工具调用本身的状态推进
+                log.exception("ToolCallBlock summary render failed tool=%s", self._tool_name)
 
-    # 点击时切换展开/折叠状态
+    # 展开详情的 markup 文本（params/output 是工具原始内容，必须整体转义）
+    def _detail_markup(self) -> str:
+        return (
+            f"[dim]params[/dim]\n{_esc(self._params_full)}\n\n"
+            f"[dim]output[/dim]\n{_esc(self._output)}\n\n"
+            f"[dim]elapsed:[/dim] {self._elapsed_ms}ms"
+        )
+
+    # 展开详情的纯文本兜底版本
+    def _detail_plain(self) -> str:
+        return (
+            f"params\n{self._params_full}\n\n"
+            f"output\n{self._output}\n\n"
+            f"elapsed: {self._elapsed_ms}ms"
+        )
+
+    # 点击时切换展开/折叠状态。展开会渲染工具原始参数/输出，
+    # 历史上这里未捕获的 MarkupError 直接让整个 TUI 退出，
+    # 因此整段展开逻辑都做兜底：任何异常都不允许逃出事件回调。
     def on_click(self) -> None:
         if not self._finished:
             return
-        if "expanded" in self.classes:
-            self.remove_class("expanded")
-        else:
+        try:
+            if "expanded" in self.classes:
+                self.remove_class("expanded")
+                return
             detail = self.query_one(".detail", SelectableStatic)
-            detail.update(
-                f"[dim]params[/dim]\n{self._params_full}\n\n"
-                f"[dim]output[/dim]\n{self._output}\n\n"
-                f"[dim]elapsed:[/dim] {self._elapsed_ms}ms"
-            )
+            _update_markup_or_plain(detail, self._detail_markup(), self._detail_plain())
             self.add_class("expanded")
+        except Exception:
+            log.exception("ToolCallBlock.on_click failed tool=%s", self._tool_name)
 
 
 class PermissionSelect(Static):
@@ -412,11 +481,16 @@ class PermissionBlock(SelectableStatic):
         self._tool_name = tool_name
         self._param_preview = param_preview
         self._resolved = False
-        super().__init__(self._pending_text(), classes="log-line")
+        try:
+            pending_text = self._pending_text()
+        except Exception:
+            log.exception("PermissionBlock pending text render failed tool=%s", self._tool_name)
+            pending_text = f"permission  {_esc(self._tool_name)}"
+        super().__init__(pending_text, classes="log-line")
 
     def _pending_text(self) -> str:
-        preview = f"  [dim]{self._param_preview}[/dim]" if self._param_preview else ""
-        return f"[bold red]? permission[/bold red]  [bold]{self._tool_name}[/bold]{preview}"
+        preview = f"  [dim]{_esc(self._param_preview)}[/dim]" if self._param_preview else ""
+        return f"[bold red]? permission[/bold red]  [bold]{_esc(self._tool_name)}[/bold]{preview}"
 
     # 将块收缩为单行摘要并发布 Resolved 消息
     def _resolve(self, decision: str) -> None:
@@ -425,11 +499,16 @@ class PermissionBlock(SelectableStatic):
         self._resolved = True
         allowed = decision in ("allow_once", "always_allow")
         icon = "[bold green]✓[/bold green]" if allowed else "[bold red]✗[/bold red]"
-        label = self._LABEL_MAP.get(decision, decision)
-        preview = f"  [dim]{self._param_preview}[/dim]" if self._param_preview else ""
-        self.update(
-            f"{icon} permission  [bold]{self._tool_name}[/bold]{preview}  [dim]{label}[/dim]"
-        )
+        label = _esc(self._LABEL_MAP.get(decision, decision))
+        preview = f"  [dim]{_esc(self._param_preview)}[/dim]" if self._param_preview else ""
+        name = _esc(self._tool_name)
+        try:
+            self.update(
+                f"{icon} permission  [bold]{name}[/bold]{preview}  [dim]{label}[/dim]"
+            )
+        except Exception:
+            log.exception("PermissionBlock._resolve render failed tool=%s", self._tool_name)
+            self.update(f"permission  {name}  {label}")
         self.post_message(self.Resolved(self, decision))
 
 
@@ -501,11 +580,13 @@ class SlashCompleteWidget(Static):
             return
         lines: list[str] = []
         for i, (name, desc) in enumerate(self._filtered):
-            desc_part = f"  [dim]{desc}[/dim]" if desc else ""
+            # skill 名称与描述来自仓库文件，可能含 [xxx]/反引号，必须转义后再拼进 markup
+            name_part = _esc(name)
+            desc_part = f"  [dim]{_esc(desc)}[/dim]" if desc else ""
             if i == self._cursor:
-                lines.append(f"  [bold cyan]❯ /{name}[/bold cyan]{desc_part}")
+                lines.append(f"  [bold cyan]❯ /{name_part}[/bold cyan]{desc_part}")
             else:
-                lines.append(f"    [cyan]/{name}[/cyan]{desc_part}")
+                lines.append(f"    [cyan]/{name_part}[/cyan]{desc_part}")
         lines.append("[dim]  ↑↓ navigate   tab/enter select   esc dismiss[/dim]")
         self.update("\n".join(lines))
 
@@ -646,7 +727,12 @@ class JarvisTuiApp(App[None]):
     """
 
     _BANNER = (
-        "[bold #ff8c00]Jarvis[/bold #ff8c00]\n"
+        "[bold #ff8c00]     ██╗  █████╗  ██████╗  ██╗   ██╗ ██╗ ███████╗[/bold #ff8c00]\n"
+        "[bold #ff8c00]     ██║ ██╔══██╗ ██╔══██╗ ██║   ██║ ██║ ██╔════╝[/bold #ff8c00]\n"
+        "[bold #ff8c00]     ██║ ███████║ ██████╔╝ ██║   ██║ ██║ ███████╗[/bold #ff8c00]\n"
+        "[bold #ff8c00]██   ██║ ██╔══██║ ██╔══██╗ ╚██╗ ██╔╝ ██║ ╚════██║[/bold #ff8c00]\n"
+        "[bold #ff8c00]╚█████╔╝ ██║  ██║ ██║  ██║  ╚████╔╝  ██║ ███████║[/bold #ff8c00]\n"
+        "[bold #ff8c00] ╚════╝  ╚═╝  ╚═╝ ╚═╝  ╚═╝   ╚═══╝   ╚═╝ ╚══════╝[/bold #ff8c00]\n"
         "[dim]JarvisAgent  ·  输入消息开始对话  ·  / 触发 skill"
         "  ·  Ctrl+Shift+C 复制  ·  Ctrl+Q 退出[/dim]"
     )
@@ -785,7 +871,7 @@ class JarvisTuiApp(App[None]):
             )
         except (IpcError, RuntimeError, OSError) as exc:
             self._append(SelectableStatic(
-                f"[yellow]permission mode sync failed: {exc}[/yellow]",
+                f"[yellow]permission mode sync failed: {_esc(exc)}[/yellow]",
                 classes="log-line",
             ))
 
@@ -856,7 +942,7 @@ class JarvisTuiApp(App[None]):
         prompt.disabled = True
         prompt.read_only = False
         prompt.border_title = "agent is working..."
-        self._append(SelectableStatic(f"[bold]>[/bold] {content}", classes="user-turn"))
+        self._append(SelectableStatic(f"[bold]>[/bold] {_esc(content)}", classes="user-turn"))
         self._update_header("running")
         self.run_worker(self._do_send_message(content), name="send_message", exclusive=False)
 
@@ -875,11 +961,14 @@ class JarvisTuiApp(App[None]):
             self._last_context_pct = 0.0
             self._append(SelectableStatic(
                 f"[bold cyan]⚡ Context compacted[/bold cyan]"
-                f"  [dim]summary={summary_tokens} tokens  saved≈{saved_tokens} tokens[/dim]",
+                f"  [dim]summary={_esc(summary_tokens)} tokens"
+                f"  saved≈{_esc(saved_tokens)} tokens[/dim]",
                 classes="log-line",
             ))
         except (IpcError, RuntimeError, OSError) as e:
-            self._append(SelectableStatic(f"[red]compact error: {e}[/red]", classes="log-line"))
+            self._append(SelectableStatic(
+                f"[red]compact error: {_esc(e)}[/red]", classes="log-line",
+            ))
 
     # 在 worker 中执行 IPC 发送，使 App 消息泵在 agent 运行期间仍能处理键盘/焦点等消息
     async def _do_send_message(self, content: str) -> None:
@@ -898,7 +987,7 @@ class JarvisTuiApp(App[None]):
                 prompt.read_only = False
                 prompt.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
             self._update_header("ready")
-            self._append(SelectableStatic(f"[red]send error: {e}[/red]", classes="log-line"))
+            self._append(SelectableStatic(f"[red]send error: {_esc(e)}[/red]", classes="log-line"))
 
     # 处理内联审批控件的用户决策：发送 IPC 响应并恢复输入框
     async def on_permission_select_decided(self, msg: PermissionSelect.Decided) -> None:
@@ -971,7 +1060,7 @@ class JarvisTuiApp(App[None]):
             header = self.query_one("#header", Label)
         except NoMatches:
             return
-        session = f"  [dim]{self._session_id}[/dim]" if self._session_id else ""
+        session = f"  [dim]{_esc(self._session_id)}[/dim]" if self._session_id else ""
         color = {
             "ready": "green",
             "running": "yellow",
@@ -983,11 +1072,15 @@ class JarvisTuiApp(App[None]):
             if self._permission_mode == "auto"
             else "[yellow]ASK[/yellow]"
         )
-        header.update(
-            f"[bold]Jarvis[/bold]  [cyan]{self._workspace.name}[/cyan]"
-            f"  [dim]{self._host}:{self._port}[/dim]"
-            f"{session}  [{color}]{state}[/{color}]  permission:{mode_badge}"
-        )
+        try:
+            header.update(
+                f"[bold]Jarvis[/bold]  [cyan]{_esc(self._workspace.name)}[/cyan]"
+                f"  [dim]{_esc(self._host)}:{_esc(self._port)}[/dim]"
+                f"{session}  [{color}]{_esc(state)}[/{color}]  permission:{mode_badge}"
+            )
+        except Exception:
+            # 顶部标题栏渲染失败不该影响会话主流程
+            log.exception("header render failed state=%s", state)
 
     # 管理 SocketClient 生命周期：连接、订阅事件、断线重连
     async def _socket_loop(self) -> None:
@@ -1055,7 +1148,12 @@ class JarvisTuiApp(App[None]):
                 self._update_header("ready")
                 await loop_task
             except IpcError as e:
-                header.update(f"[bold]Jarvis[/bold]  [red]subscribe error: {e}[/red]")
+                try:
+                    header.update(
+                        f"[bold]Jarvis[/bold]  [red]subscribe error: {_esc(e)}[/red]"
+                    )
+                except Exception:
+                    log.exception("header render failed")
             finally:
                 if not loop_task.done():
                     loop_task.cancel()
@@ -1071,6 +1169,19 @@ class JarvisTuiApp(App[None]):
 
             self._update_header("disconnected")
             await asyncio.sleep(2)
+
+    # 兜底：渲染类异常（markup/style/visual 解析失败）只影响显示，不该让 TUI 直接退出。
+    # Textual 默认对未处理异常会打印 traceback 并结束 App；其余异常仍走默认处理，
+    # 避免掩盖真正的逻辑 bug。
+    def _handle_exception(self, error: Exception) -> None:
+        if _is_render_error(error):
+            log.exception("render error swallowed to keep TUI alive: %s", error)
+            try:
+                self.notify(f"render error: {error}", severity="error")
+            except Exception:
+                pass
+            return
+        super()._handle_exception(error)
 
     # 根据事件 type 路由到对应渲染逻辑；捕获异常防止 socket loop 因单个事件崩溃
     def _handle_event(self, event: dict[str, Any]) -> None:
@@ -1115,17 +1226,17 @@ class JarvisTuiApp(App[None]):
             self._update_header("disconnected")
 
         elif t == "run.started":
-            run_id = event.get("run_id", "")
-            goal = event.get("goal", "")
+            run_id = _esc(event.get("run_id", ""))
+            goal = _esc(_preview(str(event.get("goal", "")), 96))
             self._append(SelectableStatic(
-                f"[dim]run[/dim]  [cyan]{run_id}[/cyan]  [dim]{_preview(goal, 96)}[/dim]",
+                f"[dim]run[/dim]  [cyan]{run_id}[/cyan]  [dim]{goal}[/dim]",
                 classes="run-header",
             ))
 
         elif t == "skill.invoked":
-            skill_name = event.get("skill_name", "")
-            arguments = event.get("arguments", "")
-            args_preview = _preview(arguments, 80) if arguments else ""
+            skill_name = _esc(event.get("skill_name", ""))
+            arguments = str(event.get("arguments", ""))
+            args_preview = _esc(_preview(arguments, 80)) if arguments else ""
             args_part = f"  [dim]{args_preview}[/dim]" if args_preview else ""
             self._append(SelectableStatic(
                 f"[bold cyan]/{skill_name}[/bold cyan]{args_part}",
@@ -1134,22 +1245,23 @@ class JarvisTuiApp(App[None]):
 
         elif t == "subagent.started":
             run_id = event.get("run_id", "")
-            description = event.get("description", "")
+            description = str(event.get("description", ""))
             self._subagent_run_ids[run_id] = description
             self._subagent_start_times[run_id] = time.monotonic()
             short_id = run_id[:8] if len(run_id) >= 8 else run_id
+            desc_preview = _esc(_preview(description, 72))
             self._append(SelectableStatic(
-                f"[dim]┌─[/dim] [cyan]{_preview(description, 72)}[/cyan]  [dim]{short_id}[/dim]",
+                f"[dim]┌─[/dim] [cyan]{desc_preview}[/cyan]  [dim]{_esc(short_id)}[/dim]",
                 classes="log-line",
             ))
 
         elif t == "subagent.finished":
             run_id = event.get("run_id", "")
             status = event.get("status", "")
-            description = self._subagent_run_ids.pop(run_id, event.get("description", ""))
+            description = str(self._subagent_run_ids.pop(run_id, event.get("description", "")))
             start = self._subagent_start_times.pop(run_id, None)
             elapsed = f"  [dim]{time.monotonic() - start:.1f}s[/dim]" if start is not None else ""
-            desc_part = f"[cyan]{_preview(description, 72)}[/cyan]{elapsed}"
+            desc_part = f"[cyan]{_esc(_preview(description, 72))}[/cyan]{elapsed}"
             if status == "success":
                 self._append(SelectableStatic(
                     f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
@@ -1165,7 +1277,7 @@ class JarvisTuiApp(App[None]):
             run_id = event.get("run_id", "")
             if run_id in self._subagent_run_ids:
                 return
-            step = event.get("step", "")
+            step = _esc(event.get("step", ""))
             self._append(SelectableStatic(
                 f"[dim]step {step}[/dim]",
                 classes="step-divider",
@@ -1204,13 +1316,13 @@ class JarvisTuiApp(App[None]):
             reason = event.get("reason") or ""
             if status == "success":
                 self._append(SelectableStatic(
-                    f"[bold green]✓ completed[/bold green]  [dim]{steps} steps[/dim]",
+                    f"[bold green]✓ completed[/bold green]  [dim]{_esc(steps)} steps[/dim]",
                     classes="run-ok",
                 ))
             else:
-                detail = f"  [dim]{reason}[/dim]" if reason else ""
+                detail = f"  [dim]{_esc(reason)}[/dim]" if reason else ""
                 self._append(SelectableStatic(
-                    f"[bold red]✗ failed[/bold red]{detail}  [dim]{steps} steps[/dim]",
+                    f"[bold red]✗ failed[/bold red]{detail}  [dim]{_esc(steps)} steps[/dim]",
                     classes="run-err",
                 ))
 
@@ -1223,9 +1335,9 @@ class JarvisTuiApp(App[None]):
             ctx_bar = self._render_ctx_bar(pct)
             self._append(SelectableStatic(
                 f"[dim]  tokens  "
-                f"in={event.get('input_tokens')} "
-                f"out={event.get('output_tokens')} "
-                f"cache={event.get('cache_read_input_tokens')}[/dim]"
+                f"in={_esc(event.get('input_tokens'))} "
+                f"out={_esc(event.get('output_tokens'))} "
+                f"cache={_esc(event.get('cache_read_input_tokens'))}[/dim]"
                 f"  {ctx_bar}",
                 classes="usage",
             ))
@@ -1236,7 +1348,7 @@ class JarvisTuiApp(App[None]):
             self._last_context_pct = 0.0
             self._append(SelectableStatic(
                 f"[bold cyan]⚡ Context compacted[/bold cyan]"
-                f"  [dim]original≈{orig} tokens → summary={summary} tokens[/dim]",
+                f"  [dim]original≈{_esc(orig)} tokens → summary={_esc(summary)} tokens[/dim]",
                 classes="log-line",
             ))
 
@@ -1294,11 +1406,12 @@ class JarvisTuiApp(App[None]):
                         p.focus()
 
         elif t == "log.line":
-            level = event.get("level", "INFO")
+            # 日志正文常包含异常堆栈/路径/括号，必须整体转义后再拼进 markup
+            level = _esc(event.get("level", "INFO"))
             color = "bold red" if level == "ERROR" else ("yellow" if level == "WARNING" else "dim")
             self._append(SelectableStatic(
                 f"[{color}]{level}[/{color}]  "
-                f"[dim]{event.get('source', '')}[/dim]  {event.get('message', '')}",
+                f"[dim]{_esc(event.get('source', ''))}[/dim]  {_esc(event.get('message', ''))}",
                 classes="log-line",
             ))
 
