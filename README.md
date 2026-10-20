@@ -2,7 +2,8 @@
 
 JarvisAgent 是一个面向本地代码仓库的 Coding Agent。它能够调用 LLM 读取代码、
 检索文件、执行 Shell、修改文件、管理任务，并通过 TUI 展示流式回答、工具调用、
-权限审批、上下文占用和运行日志。
+权限审批、上下文占用和运行日志。对话按项目保存，退出或重启 Core 后可以恢复
+历史会话，继续使用已有上下文与 Notes。
 
 项目采用 `jarvis-core daemon + CLI/TUI` 双进程架构：
 
@@ -27,13 +28,23 @@ Jarvis 会把当前目录作为 workspace，自动创建 `.jarvis/`，启动该�
 Core daemon，然后进入 TUI。不需要先进入 JarvisAgent 源码目录，也不需要手动运行
 `jarvis-core`。
 
+日常使用入口：
+
+| 目的 | 命令 |
+|---|---|
+| 在当前项目新建会话 | `jarvis` |
+| 从当前项目的历史列表选择会话 | `jarvis --resume` |
+| 继续指定会话 | `jarvis --resume sess-xxx` |
+| 查看某次运行的历史事件 | `jarvis --replay <run-id>` |
+
 ## 功能概览
 
 - ReAct Agent Loop：模型决策、工具执行、结果回填和继续决策
 - 内置代码工具：项目结构、文件搜索、文件读写、PowerShell/Shell
 - DeepSeek 与 Anthropic Provider
 - Ask/Auto 权限模式，以及单次、长期允许或拒绝
-- Session、Notes、Global/Project Context 与上下文压缩
+- 按项目持久化会话，支持历史选择、指定 ID 恢复和中断提示
+- Session Notes、Global/Project Context 与上下文压缩
 - Skills、Sub-Agent 和 MCP 外部工具
 - EventBus、`events.jsonl`、Trace 和日志
 - Textual TUI，支持流式输出、复制回答和鼠标选择文本
@@ -78,7 +89,7 @@ uv python find 3.12
 
 ```powershell
 cd D:\agent
-git clone git@github.com:Misty-finding/JarvisAgent.git
+git clone https://github.com/Misty-finding/JarvisAgent.git
 cd JarvisAgent
 uv tool install --python 3.12 --editable .
 ```
@@ -103,11 +114,11 @@ Get-Command jarvis
 不准备修改源码时，可以直接安装：
 
 ```powershell
-uv tool install --python 3.12 "git+ssh://git@github.com/Misty-finding/JarvisAgent.git"
+uv tool install --python 3.12 "git+https://github.com/Misty-finding/JarvisAgent.git@main"
 uv tool update-shell
 ```
 
-重新打开 PowerShell后执行：
+重新打开 PowerShell 后执行：
 
 ```powershell
 jarvis --version
@@ -119,7 +130,7 @@ jarvis --version
 
 ```powershell
 cd D:\agent\JarvisAgent
-git pull
+git pull --ff-only
 uv tool install --python 3.12 --editable . --force
 ```
 
@@ -127,8 +138,19 @@ uv tool install --python 3.12 --editable . --force
 
 ```powershell
 uv tool install --python 3.12 `
-  "git+ssh://git@github.com/Misty-finding/JarvisAgent.git" --force
+  "git+https://github.com/Misty-finding/JarvisAgent.git@main" --force
 ```
+
+更新完成后，进入实际使用 Jarvis 的项目目录，重启该项目的 Core，再恢复会话：
+
+```powershell
+cd D:\work\my-project
+jarvis core stop
+jarvis --resume
+```
+
+已启动的 Core 会继续使用原进程中加载的代码和配置。先等待正在执行的任务结束，
+再停止 Core；有多个项目时，分别在各项目目录执行。已有会话数据会保留。
 
 ## 三、配置 DeepSeek API
 
@@ -301,67 +323,17 @@ max_steps = 100
 
 ## 六、常用命令
 
-直接启动当前目录：
+### TUI 会话
 
 ```powershell
-jarvis
+jarvis                       # 新建会话
+jarvis --resume              # 选择当前项目的历史会话
+jarvis --resume sess-xxx      # 恢复指定会话
+jarvis --replay <run-id>      # 查看历史运行事件
 ```
 
-查看当前项目 Core：
-
-```powershell
-jarvis core status
-```
-
-手动启动或停止当前项目 Core：
-
-```powershell
-jarvis core start
-jarvis core stop
-```
-
-检查 IPC：
-
-```powershell
-jarvis ping
-```
-
-执行一次性任务：
-
-```powershell
-jarvis run --goal "分析这个项目的入口和主要调用链"
-```
-
-启动纯命令行多轮会话：
-
-```powershell
-jarvis chat
-```
-
-查看 Trace：
-
-```powershell
-jarvis trace
-jarvis trace <run-id>
-jarvis trace <run-id> --layer llm
-jarvis trace --follow
-```
-
-回放历史 Run：
-
-```powershell
-jarvis --replay <run-id>
-```
-
-恢复当前项目的历史会话：
-
-```powershell
-jarvis --resume             # 在 TUI 中选择历史会话
-jarvis --resume sess-xxx    # 恢复指定会话
-```
-
-历史列表按最近更新时间排序，显示标题、会话 ID 和运行状态。使用 `↑` / `↓`
-选择、`Enter` 恢复、`Esc` 退出；也可以明确选择“新建会话”。正在运行的会话需要
+`jarvis --resume` 的历史列表按最近更新时间排序，显示标题、会话 ID 和运行状态。
+使用 `↑` / `↓` 选择、`Enter` 恢复、`Esc` 退出；也可以明确选择“新建会话”。正在运行的会话需要
 等待本轮结束才能恢复。每个项目的历史独立存放在 `.jarvis/sessions/`。
 
 恢复会加载已保存的对话；下一次输入会沿用这些上下文和 Notes。已压缩的会话加载
@@ -373,8 +345,33 @@ jarvis --resume sess-xxx    # 恢复指定会话
 若仅最后一行 JSON 写入不完整，会备份并保留有效历史；历史中间损坏则报错，
 不会静默丢弃。更多细节和手测步骤见 [会话恢复说明](docs/session-recovery.md)。
 
-更新本功能后，如果该项目的 Core 仍在运行，请先执行 `jarvis core stop`，再使用
-上述命令；新的 Core 会自动启动。
+恢复适用于当前项目的聊天会话。`--resume` 与 `--replay` 互斥，恢复后需要发送
+新消息才会开始下一轮执行；`jarvis run` 创建的一次性任务可通过 `--replay` 查看。
+
+### Core 管理
+
+以下命令均作用于当前项目：
+
+```powershell
+jarvis core status          # 查看 Core 状态
+jarvis core start           # 启动或复用 Core
+jarvis core stop            # 停止 Core
+jarvis ping                 # 检查 IPC 连接
+```
+
+### Trace 与脚本调试
+
+TUI 是主要交互入口。以下命令用于排查运行记录或脚本测试；`run`、`chat` 和 `ping`
+需要已有 Core，可先执行 `jarvis core start`。
+
+```powershell
+jarvis trace
+jarvis trace <run-id>
+jarvis trace <run-id> --layer llm
+jarvis trace --follow
+jarvis run --goal "分析这个项目的入口和主要调用链"
+jarvis chat
+```
 
 ## 七、TUI 操作
 
@@ -386,6 +383,10 @@ jarvis --resume sess-xxx    # 恢复指定会话
 | 切换 Ask/Auto 权限模式 | `Alt+Tab` 或 `Shift+Tab` |
 | 复制最近一条回答 | `Ctrl+Shift+C` 或 `Alt+C` |
 | 鼠标复制 | 长按拖动选择后使用终端复制 |
+| 退出 TUI | `Ctrl+Q` |
+| 选择历史会话 | 启动时使用 `jarvis --resume`，再按 `↑` / `↓`、`Enter` |
+| 退出历史选择器 | `Esc` |
+| 手动压缩当前会话 | 输入 `/compact` |
 
 `Ask` 模式下，高风险工具需要用户确认。`Auto` 模式会直接放行工具调用，
 只应在可信代码仓库中使用。
@@ -538,6 +539,13 @@ Get-Content ".jarvis\runtime\core.stderr.log" -Tail 100
 └─ runs\<run-id>\events.jsonl
 ```
 
+| 文件 | 用途 |
+|---|---|
+| `meta.json` | 会话标题、项目目录、更新时间和运行状态 |
+| `thread.jsonl` | 已保存的对话及工具结果，供恢复上下文使用 |
+| `notes.md` | Agent 保存的会话笔记，下一轮执行时加载 |
+| `runs/<run-id>/events.jsonl` | 每次运行的事件记录，供回放和排查使用 |
+
 Daemon Trace：
 
 ```text
@@ -612,6 +620,25 @@ jarvis
 .jarvis\runtime\core.json
 ```
 
+### 恢复列表为空，或找不到之前的会话
+
+先回到原项目的启动目录执行 `jarvis --resume`，检查该目录是否仍有
+`.jarvis\sessions\`。会话按项目隔离，普通 `jarvis` 每次会新建会话，
+`jarvis run` 的一次性任务也不会出现在可恢复的聊天列表中。
+
+### 更新后恢复失败，或提示不支持 `session.list` / `session.resume`
+
+在原项目目录停止旧 Core，再重新进入历史列表：
+
+```powershell
+jarvis core stop
+jarvis --resume
+```
+
+如果命令本身不识别 `--resume`，先按上文更新全局安装，并用 `Get-Command jarvis`
+确认当前命令路径。指定 ID 不存在或历史损坏时会显示错误，详见
+[会话恢复说明](docs/session-recovery.md)。
+
 ### 切换目录后还是分析旧项目
 
 每个 workspace 都有自己的 `.jarvis\runtime\core.json`。先在旧项目执行：
@@ -639,13 +666,14 @@ uv tool uninstall jarvis
 ## 十二、开发和验证
 
 ```powershell
-git clone git@github.com:Misty-finding/JarvisAgent.git
+git clone https://github.com/Misty-finding/JarvisAgent.git
 cd JarvisAgent
 uv sync --python 3.12
 
 uv run ruff check src tests scripts
 uv run mypy src
 uv run pytest tests -q
+uv run python scripts/gen_protocol_doc.py --check
 ```
 
 只运行单元测试：
@@ -654,17 +682,17 @@ uv run pytest tests -q
 uv run pytest tests/unit -q
 ```
 
-项目源码阅读与面试准备资料位于：
+## 十三、文档与学习资料
 
-```text
-studydocs\
-```
-
-核心阅读入口：
-
-```text
-studydocs\CODE_READING_INTERVIEW_GUIDE.md
-```
+| 内容 | 入口 |
+|---|---|
+| 会话恢复、持久化边界和手动验证 | [会话恢复说明](docs/session-recovery.md) |
+| RPC 命令与事件定义 | [通信协议](WIRE_PROTOCOL.md) |
+| 启动、配置与运行排查 | [运行手册](RUNBOOK.md) |
+| 源码阅读与学习资料总览 | [学习资料索引](studydocs/README.md) |
+| 七天源码阅读路线 | [源码阅读与面试指南](studydocs/CODE_READING_INTERVIEW_GUIDE.md) |
+| Skills 配置与调用 | [Skills 使用指南](studydocs/SKILLS_GUIDE.md) |
+| 项目面试复习与详细追问 | [逐词追问与答案手册](studydocs/JARVIS_逐词追问与答案手册.md) |
 
 ## License
 
