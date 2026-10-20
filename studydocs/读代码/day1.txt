@@ -1,0 +1,290 @@
+day1:
+对应 简历第一条整体架构： 设计 Core 守护进程与 TUI 双进程架构，基于 asyncio 和 JSON-RPC over TCP 实现任务提交、事件订阅与流式进度推
+送，支持在任意目录启动项目工作区。
+在任意目录输入jarvis  根据环境变量  直接运行jarvis.exe  （由项目的pyproject.toml规定）
+[project.scripts]
+jarvis = "jarvis.cli.main:main"
+执行完uv install以后  就会在C:\Users\23148\.local\bin\jarvis.exe
+解析参数  获取config然后  launch  1.ensurecorerunning   2. 启动tui
+
+1.ensurecorerunning  获取runtime  获取当前path  根据当前path看是否已有core 有就返回
+没有  --  在但是没法用的话删除runtime 避免污染
+获取port  获取环境变量  daemon.env包括地址端口工作目录（优先当前工作目录）
+拼一下启动core的参数 -- cwd dameon.env  是否新建session:true  启动日志的目录：jarvis/runtime/****.log
+拼命令  python.exe -B -m jarvis.core
+把运行信息（pid，host:port , workspace )保存为一个runtime  异步等待core进程起来
+如果启动失败清理目录  别污染  启动成功返回runtime
+
+2.启动tui   run_tui（注意参数 ：是否恢复以前session）
+获取最新config，初始化JarvisTuiApp 绑定各种命令 比如ctrl+q是退出  alt+tab是切换权限模式）
+
+run_tui()
+  -> JarvisTuiApp(...)
+  -> app.run()   -->Textual 调用 compose()创建顶部 Label创建日志滚动区创建聊天输入框  创建完成后调用钩子
+  -> on_mount()   钩子函数  加载斜杠命令和 Skills  向日志区添加 Banner
+  -> run_worker(_socket_loop())   后台启动
+  -> SocketClient.connect()    连接core   创建session   接受core推送  断线后重连     permission.set_mode
+解禁输入框  界面显示ready  可以发消息了
+
+用户输入消息  ：
+
+命令上行链：
+TUI：_do_send_message使用client.send_command("session.send_message")， 创建 request_id 和 Future 创建 Future，开始等待
+包装为一个JsonRpcRequest(id, method, params)  request = JsonRpcRequest(id=req_id, method=method, params=params)
+TCP 中的一行 JSON   self._writer.write(request.model_dump_json().encode() + b"\n")
+TCP 数据到达 Core 后，进入 [socket_server.py (line 122)]   _read_loop()持续读取换行分隔的 JSON 行并逐行分发处理
+		具体：SocketServer.start() 注册连接回调：
+		在 [socket_server.py (line 70)]： 创建 TCP 服务，并规定：以后每当有客户端连接进来，就调用 _handle_connection(reader, writer)
+		self._server = await asyncio.start_server(
+			self._handle_connection,
+			host=self._host,
+			port=self._port,
+			limit=_MAX_LINE_BYTES,
+		)
+		然后执行 await self._read_loop(reader, writer) 然后
+SocketServer._handle_line()  解析单行 JSON-RPC 请求并调用对应 handler，将结果或错误写回客户端
+handlers["session.send_message"]
+CoreApp._session_send_handler()
+await SessionManager.send_message()
+       -> Agent 执行期间持续向 TUI 推送事件
+	   Core：Agent 开始执行
+				  ↓
+				Core 推送 run.started 事件
+				  ↓
+				TUI：_dispatch(event)，显示任务开始
+				  ↓
+				Core 推送 llm.token 事件
+				  ↓
+				TUI：_dispatch(event)，显示模型文字
+				  ↓
+				Core 推送 tool.call_started 事件
+				  ↓
+				TUI：_dispatch(event)，显示工具调用
+				  ↓
+				Core 推送更多 llm.token 事件
+				  ↓
+				TUI：持续更新回答
+等待Agent执行结束后发送SessionSendMessageResult(run_id)
+JsonRpcSuccess(id=原 request_id, result={"run_id": ...})
+SocketServer._handle_line()这里执行self._send(writer, JsonRpcSuccess(id=req.id, result=result_data))
+TCP 返回 TUI
+在 _socket_loop() 中，连接成功后就启动了
+loop_task = asyncio.create_task(
+    client.run_event_loop()
+)
+run_event_loop() 会一直等待 Core 发来的数据：
+TUI 的 StreamReader 读取
+SocketClient.run_event_loop() 读取
+SocketClient._dispatch()
+根据 request_id 找到 Future
+Future.set_result({"run_id": ...})
+send_command() 结束等待
+
+
+事件下行链：
+Agent 组件发布 Event
+  -> EventBus
+  -> IpcEventBroadcaster.handle()
+  -> EventPushEnvelope(kind="event")
+  -> 同一条 TCP 连接
+  -> SocketClient._dispatch()
+  -> TUI on_event()
+  -> _handle_event_inner()
+  -> 更新界面
+
+分为Core 内部产生事件
+→ Core 把事件写入 TCP
+→ TUI 读取事件并更新界面
+
+前提是tui先订阅事件
+在jarvisapp启动时就进行
+JarvisTuiApp._socket_loop()
+loop_task = asyncio.create_task(client.run_event_loop())：启动 SocketClient.run_event_loop()，持续接收 Core 消息
+注册 on_event()，规定收到事件后交给谁
+发送订阅命令
+await client.send_command(
+    "event.subscribe",
+    {
+        "topics": [
+            "session.*",
+            "run.*",
+            "step.*",
+            "tool.*",
+            "llm.token",
+            "llm.usage",
+            "permission.*",
+            ...
+        ],
+        "scope": "global",
+    },
+)
+Core 对应的 Handler 是：
+[app.py (line 190)](../../src/jarvis/core/app.py#L190)
+async def _subscribe_handler(self, params):
+    cmd = EventSubscribeCommand.model_validate(params)
+    writer = get_connection_writer()
+
+    sub_id = self._broadcaster.subscribe(
+        writer,
+        cmd.topics,
+        cmd.scope,
+    )
+这里把三样东西保存进 IpcEventBroadcaster：
+当前 TCP 连接的 writer
+订阅的事件类型 topics
+订阅范围 scope
+以后产生事件时，就通过这个 writer 发回 TUI。
+agent在各个环节发布时间 bus.publish
+async def publish(self, event: BaseModel) -> None:
+    for handler in self._subscribers:
+        await handler(event)
+EventBus 是 Core 进程内部的函数调用机制，此时还没有经过 TCP。
+
+IpcEventBroadcaster.handle()
+位置：[ipc_broadcaster.py (line 53)](../../src/jarvis/core/transport/ipc_broadcaster.py#L53)
+async def handle(self, event: BaseModel) -> None:
+    event_dict = event.model_dump()
+    event_type = event_dict.get("type", "")
+    run_id = event_dict.get("run_id")
+
+    for sub in list(self._subscriptions):
+        if not self._matches_topic(event_type, sub.topics):
+            continue
+        if not self._matches_scope(run_id, sub.scope):
+            continue
+它首先检查：这个 TUI 有没有订阅该事件类型？事件是否符合订阅范围？
+在 [ipc_broadcaster.py (line 66)]把事件包装为EventPushEnvelope写入TCP
+sub.writer.write(
+    envelope.model_dump_json().encode() + b"\n"
+)
+await sub.writer.drain()
+SocketClient.run_event_loop() 读取
+读到后await self._dispatch(line)  走event分支  前端处理  更新tui
+
+面试问题：
+1. 请介绍一下 Jarvis 的整体架构
+回答：
+Jarvis 采用本地 TUI 客户端和 Core 守护进程的双进程架构。TUI 负责接收用户输入、展示模型流式输出、工具执行状态和权限审批；Core 负责维护 Session、运行 Agent Loop、调用模型和工具，并记录事件与 Trace。
+两个进程通过 JSON-RPC over TCP 通信。TUI 使用命令向 Core 创建 Session、发送消息和提交审批；Core 执行任务期间，通过事件订阅机制把模型 Token、工具调用和运行状态实时推送回 TUI。
+用户可以在任意项目目录执行 jarvis，程序会把当前目录初始化为 workspace，并自动启动或复用对应的 Core。
+
+2. 为什么要拆成 TUI 和 Core 两个进程？
+回答：
+主要有三个考虑。第一是职责分离，TUI 只负责交互和展示，Core 统一负责 Session、Agent、工具和权限。第二是生命周期隔离，界面和 Agent 执行不必完全绑定，未来可以支持 TUI 断线重连、后台任务以及其他客户端接入。第三是状态集中管理，CLI、TUI 或未来的 IDE 插件可以复用同一个 Core，而不用分别实现 Agent Loop。
+代价是增加了进程管理、端口选择、IPC 协议和断线处理的复杂度。
+
+不要说“双进程一定比单进程好”，要主动说出取舍。
+3. 为什么不直接在 TUI 进程里运行 Agent？
+回答：
+单进程实现更简单，但 Textual 界面和 Agent 执行会共享一个进程和事件循环，界面生命周期也会绑定任务生命周期。拆分后，Core 可以独立维护执行状态，TUI 只通过协议驱动任务。
+同时，Core 的能力不再依赖某个具体前端，后续增加 CLI、IDE 插件或者 Web 客户端时，可以直接复用协议和执行内核。
+
+4. 参考了哪些优秀设计？
+回答：
+我参考的不是某一个项目的具体源码，而是几类通用架构。进程拆分采用了 Client-Daemon 思路，类似编辑器与语言服务器的职责分离；通信层参考了 LSP、MCP 等系统使用的 JSON-RPC 模式；执行状态则采用发布订阅式事件流，让 Agent 组件只负责发布结构化事件，由 TUI、事件文件和 Trace 分别消费。
+Claude Code 并没有公开完整内部架构，所以我不会声称 Jarvis 复制了 Claude Code 的实现。
+
+5. 为什么选择 JSON-RPC over TCP？
+回答：
+JSON-RPC 提供了统一的 method、params、id、result、error 结构，适合表达创建 Session、发送消息和权限审批等命令。request id 可以让客户端在同一连接上并发发送请求并匹配响应。
+TCP 提供稳定的双向长连接，除了请求响应外，Core 还可以在同一连接上主动推送流式事件。相比每次建立 HTTP 请求，它更适合模型 Token 和工具状态的持续推送。
+
+6. JSON-RPC 响应和事件怎样共用同一条 TCP 连接？
+回答：
+两种消息使用不同的外层结构。JSON-RPC 响应包含 jsonrpc 和 id，事件推送包含 kind="event" 和 event。TUI 的 SocketClient.run_event_loop() 持续读取以换行分隔的 JSON，交给 _dispatch() 分流。
+如果消息包含 jsonrpc，就根据 request id 找到等待中的 Future；如果 kind 是 event，就交给 TUI 的事件处理器更新界面。
+
+if "jsonrpc" in msg:
+    # 匹配 Future
+elif msg.get("kind") == "event":
+    # 处理实时事件
+7. 从用户输入到最终回答的完整流程是什么？
+回答：
+用户提交消息后，TUI 调用 send_command("session.send_message")，生成 request id 和 Future，并将 JSON-RPC 请求写入 TCP。Core 的 SocketServer 读取请求，根据 method 路由到 _session_send_handler()，再调用 SessionManager.send_message() 创建本次 run。
+Agent 执行期间，Core 持续发布 run.started、llm.token、tool.call_started 等事件，经 EventBus 和 IpcEventBroadcaster 推送到 TUI。执行结束后，SessionManager 返回 run id，服务端将其包装为 JsonRpcSuccess。TUI 根据原 request id 找到 Future，结束这次命令等待。
+
+8. request id、session id 和 run id 有什么区别？
+回答：
+request id 标识一次 RPC 请求，用于匹配请求和响应，生命周期最短。
+session id 标识一段多轮对话，关联历史消息、Notes 和权限模式。
+run id 标识 Session 中一次用户消息触发的 Agent 执行，用于关联模型调用、工具事件、Trace 和运行结果。
+
+一个 Session
+├── Run 1
+├── Run 2
+└── Run 3
+
+每个 Run 内又可能存在多个 JSON-RPC 请求。
+9. 为什么需要 Future？
+回答：
+TUI 发送请求后不能阻塞整个界面，但需要等待对应的 Core 响应。因此 send_command() 为每个 request id 创建一个 Future，保存到 _pending。
+Socket 接收循环收到响应后，根据 request id 找到对应 Future，并调用 set_result()。这样发送协程被唤醒，而 Textual 界面和事件接收仍然可以继续运行。
+
+10. 为什么服务端使用 create_task() 处理每条命令？
+回答：
+session.send_message 可能持续很久，如果读取循环直接 await 它，就无法继续读取同一连接上的其他命令。
+服务端为每条请求创建独立 Task 后，读取循环可以继续工作。例如 Agent 等待权限审批时，Core 仍然可以接收 TUI 发来的 permission.respond，否则会形成死锁。
+
+这一点很适合面试中主动讲，是比较实在的异步设计亮点。
+11. 怎么做到在任意目录输入 jarvis 都能启动？
+回答：
+pyproject.toml 通过 [project.scripts] 声明：
+jarvis = "jarvis.cli.main:main"
+项目安装后，包管理工具生成 jarvis.exe 并放入 PATH 目录。用户输入 jarvis 时，PowerShell通过 PATH 找到启动器，再调用 jarvis.cli.main.main()。
+配置创建时默认使用当前目录作为 workspace，initialize_workspace() 在其中创建 .jarvis 运行目录。Core 子进程又通过 cwd 和 JARVIS_WORKSPACE_ROOT 绑定这个项目，因此命令安装位置和项目工作目录彼此独立。
+
+12. Core 怎么做到自动启动和复用？
+回答：
+ensure_core_running() 先读取当前 workspace 下的 runtime 信息，其中保存 PID、host、port 和 workspace。如果旧 Core 能正常响应并且 workspace 一致，就直接复用。
+如果 runtime 已失效，则终止残留进程、清理旧状态、选择可用端口，然后通过 subprocess.Popen() 启动 python -B -m jarvis.core。启动器会等待健康检查通过，再把真实 host、port 和 workspace 交给 TUI。
+
+13. 多个项目同时启动会不会冲突？
+回答：
+每个项目在自己的 .jarvis/runtime 下保存 Core 运行信息，因此 runtime 是 workspace 级隔离的。启动时会先尝试配置端口，如果被占用则选择可用端口，TUI 使用 Core 实际返回的端口连接。
+因此不同项目可以使用不同 Core 和端口，不需要共享同一个工作区状态。
+
+14. Core 崩溃或者 TUI 断线怎么办？
+回答：
+启动阶段如果 Core 提前退出或健康检查超时，启动器会终止残留进程并清理 runtime，避免下一次误判。TUI 的 _socket_loop() 在连接失败或断开后，会禁用输入框并定时尝试重连。
+当前已经实现连接重试和失效 runtime 清理，但“重连后恢复正在执行中的完整 Session 状态”还不够完善，这是后续可以增强的地方。
+
+主动承认这个边界会比说“完全支持断线恢复”更可信。
+15. 为什么事件不直接由 AgentLoop 调用 TUI？
+回答：
+AgentLoop 位于 Core 进程，而 TUI 位于另一个进程，不能直接调用 Python 方法。另外，让 AgentLoop依赖 TUI 会造成执行逻辑和展示逻辑耦合。
+现在 Agent 组件只向 EventBus 发布结构化事件，IpcEventBroadcaster 负责跨进程推送，TUI 负责渲染。以后增加事件持久化、Trace 或其他前端时，不需要修改 AgentLoop。
+
+16. 这个架构目前最大的不足是什么？
+回答：
+第一，双进程带来了端口、PID、runtime 文件和断线处理的额外复杂度。第二，当前 session.send_message 的 JSON-RPC 响应要等整个 Run 完成后才返回，虽然事件可以实时推送，但命令层还可以进一步改为立即返回 run id。第三，TUI 重连后对正在运行 Session 的恢复能力还不完整。
+后续可以把任务提交改成快速返回 run id，再通过事件查询任务状态，并增强 Session 恢复和运行中任务注册。
+
+面试开场版
+面试官让你“介绍一下架构”，先说下面这一段，不要一上来讲 Future 和 _dispatch()：
+Jarvis 采用 TUI Client 与 Core Daemon 的双进程架构。TUI 负责交互展示，Core 统一维护 Session、Agent Loop、模型、工具和权限，双方通过 JSON-RPC over TCP 通信。命令使用 request id 完成请求响应匹配，Agent 执行状态则通过事件订阅实时推送。启动器会将当前目录初始化为 workspace，并自动启动或复用项目级 Core，因此用户可以在任意代码仓库直接执行 jarvis 开始工作。
+
+
+17.目前在不同目录下启动 会是多个后端core
+同一个目录下启动会是同一个后端core存在文件读写冲突    改进方向是session_id隔离
+所有事件都携带 session_id；
+TUI 使用 scope="session:<session_id>" 订阅；
+Core 按 session_id 过滤事件。
+两个 TUI 虽然创建不同的 session_id，但当前都使用："scope": "global"
+
+18.目前的恢复旧对话   Session 没有实现真正的恢复
+
+TUI 连接 Core 后会创建新 Session：
+created = await client.send_command("session.create", {"mode": "chat"})
+self._session_id = created["session_id"]
+关闭后再次执行 jarvis不会恢复旧 Session，而是重新调用 session.create，生成新的
+
+当前的jarvis --replay run-xxx  它只是读取某个 Run 的 events.jsonl，把 token、工具调用等事件重新显示一遍，然后仍然创建一个新 Session。
+
+也就是说：
+场景											是否支持
+同一 TUI 中连续多轮对话							支持
+对话记录写入磁盘								支持
+回放指定 Run 的界面事件							支持
+关闭 TUI 后继续旧 Session						不支持
+Core 重启后恢复旧 Session						不支持
+自动恢复当前目录最近 Session					不支持

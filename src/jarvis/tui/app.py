@@ -25,6 +25,7 @@ from textual.widgets import Label, Static, TextArea
 from jarvis.core.config import JarvisConfig
 from jarvis.core.skills.loader import SkillLoader
 from jarvis.core.transport.socket_client import IpcError, SocketClient
+from jarvis.tui.session_picker import SessionPicker
 
 log = logging.getLogger(__name__)
 
@@ -274,7 +275,7 @@ class ToolCallBlock(Widget):
         self._params = params
         self._params_full = _params_str(params)
         self._output = ""
-        self._elapsed_ms = 0
+        self._elapsed_ms: int | None = 0
         self._is_error = False
         self._finished = False
 
@@ -285,7 +286,7 @@ class ToolCallBlock(Widget):
     # 生成摘要行文本
     def _summary(self) -> str:
         if self._tool_name == "note_save" and self._finished and not self._is_error:
-            return f"  [green]remembered[/green]  [dim]{self._elapsed_ms}ms[/dim]"
+            return f"  [green]remembered[/green]  [dim]{self._elapsed_text()}[/dim]"
 
         params_pre = _param_summary(self._tool_name, self._params)
         line = f"  [dim]tool[/dim] [bold]{_esc(self._tool_name)}[/bold]"
@@ -295,11 +296,15 @@ class ToolCallBlock(Widget):
             color = "red" if self._is_error else "green"
             status = "failed" if self._is_error else "done"
             hint = "  [dim](click to expand)[/dim]" if self._output else ""
-            line += f"  [{color}]{status}[/{color}]  [dim]{self._elapsed_ms}ms[/dim]{hint}"
+            line += f"  [{color}]{status}[/{color}]  [dim]{self._elapsed_text()}[/dim]{hint}"
         return line
 
+    # 历史未保存耗时时明确标记，避免把未知耗时显示成零毫秒
+    def _elapsed_text(self) -> str:
+        return "历史记录" if self._elapsed_ms is None else f"{self._elapsed_ms}ms"
+
     # 工具调用完成时更新结果并刷新摘要（widget 未挂载时跳过 DOM 更新）
-    def set_result(self, output: str, elapsed_ms: int, *, is_error: bool = False) -> None:
+    def set_result(self, output: str, elapsed_ms: int | None, *, is_error: bool = False) -> None:
         self._output = output
         self._elapsed_ms = elapsed_ms
         self._is_error = is_error
@@ -318,7 +323,7 @@ class ToolCallBlock(Widget):
         return (
             f"[dim]params[/dim]\n{_esc(self._params_full)}\n\n"
             f"[dim]output[/dim]\n{_esc(self._output)}\n\n"
-            f"[dim]elapsed:[/dim] {self._elapsed_ms}ms"
+            f"[dim]elapsed:[/dim] {self._elapsed_text()}"
         )
 
     # 展开详情的纯文本兜底版本
@@ -326,7 +331,7 @@ class ToolCallBlock(Widget):
         return (
             f"params\n{self._params_full}\n\n"
             f"output\n{self._output}\n\n"
-            f"elapsed: {self._elapsed_ms}ms"
+            f"elapsed: {self._elapsed_text()}"
         )
 
     # 点击时切换展开/折叠状态。展开会渲染工具原始参数/输出，
@@ -744,12 +749,16 @@ class JarvisTuiApp(App[None]):
         port: int,
         replay_run_id: str | None = None,
         workspace: str | None = None,
+        resume_session_id: str | None = None,
     ) -> None:
         super().__init__()
         self._host = host
         self._port = port
         self._workspace = Path(workspace).resolve() if workspace else Path.cwd().resolve()
         self._replay_run_id = replay_run_id
+        self._resume_session_id = resume_session_id
+        self._opening_session = True
+        self._session_run_ids: set[str] = set()
         self._client: SocketClient | None = None
         self._current_llm: LLMStreamBlock | None = None
         self._last_llm_block: LLMStreamBlock | None = None
@@ -1103,7 +1112,8 @@ class JarvisTuiApp(App[None]):
             loop_task = asyncio.create_task(client.run_event_loop())
 
             async def on_event(event: dict[str, Any]) -> None:
-                self._handle_event(event)
+                if not self._opening_session:
+                    self._handle_event(event)
 
             client.on_event(on_event)
 
@@ -1113,6 +1123,10 @@ class JarvisTuiApp(App[None]):
                     if not t.cancelled() and t.exception() is not None
                     else None
                 )
+                self._opening_session = True
+                if not await self._open_session(client):
+                    await loop_task
+                    return
                 params: dict[str, Any] = {
                     "topics": [
                         "session.*",
@@ -1131,14 +1145,14 @@ class JarvisTuiApp(App[None]):
                 }
                 if self._replay_run_id is not None:
                     params["replay_from_run"] = self._replay_run_id
+                    self._opening_session = False
                 await client.send_command("event.subscribe", params)
-                created = await client.send_command("session.create", {"mode": "chat"})
-                self._session_id = str(created["session_id"])
+                self._opening_session = False
                 await client.send_command(
                     "permission.set_mode",
                     {"session_id": self._session_id, "mode": self._permission_mode},
                 )
-                log.info("session created session_id=%s", self._session_id)
+                log.info("session ready session_id=%s", self._session_id)
                 prompt = self._prompt()
                 if prompt is not None:
                     prompt.disabled = False
@@ -1158,6 +1172,8 @@ class JarvisTuiApp(App[None]):
                 if not loop_task.done():
                     loop_task.cancel()
                 self._client = None
+                if self._session_id is not None:
+                    self._resume_session_id = self._session_id
                 self._session_id = None
                 prompt = self._prompt()
                 if prompt is not None:
@@ -1169,6 +1185,107 @@ class JarvisTuiApp(App[None]):
 
             self._update_header("disconnected")
             await asyncio.sleep(2)
+
+    # 创建或恢复会话，恢复过程只加载历史并等待用户输入
+    async def _open_session(self, client: SocketClient) -> bool:
+        selected = self._resume_session_id
+        try:
+            while selected == "":
+                listing = await client.send_command("session.list", {})
+                selected = await self.push_screen_wait(SessionPicker(
+                    listing.get("sessions", []), listing.get("warnings", [])
+                ))
+                if selected is None:
+                    self.exit()
+                    return False
+                if selected == "":
+                    selected = None
+                    break
+                try:
+                    restored = await client.send_command("session.resume", {"session_id": selected})
+                except IpcError as exc:
+                    self.notify(str(exc), severity="error", timeout=8)
+                    selected = ""
+                    continue
+                await self._show_restored_session(restored)
+                return True
+            if selected is not None:
+                restored = await client.send_command("session.resume", {"session_id": selected})
+                await self._show_restored_session(restored)
+            else:
+                created = await client.send_command("session.create", {"mode": "chat"})
+                self._session_id = str(created["session_id"])
+                self._session_run_ids.clear()
+            return True
+        except IpcError as exc:
+            self._append(SelectableStatic(
+                f"[red]无法打开会话：{_esc(exc)}[/red]\n"
+                "[dim]若 Core 尚未更新，请先运行 jarvis core stop 后重新启动。Ctrl+Q 退出。[/dim]",
+                classes="log-line",
+            ))
+            self._update_header("resume failed")
+            return False
+
+    # 清理旧界面并渲染恢复快照，不向实时事件处理器回放审批或运行事件
+    async def _show_restored_session(self, restored: dict[str, Any]) -> None:
+        self._session_id = str(restored["session_id"])
+        self._session_run_ids = set(restored.get("run_ids", []))
+        self._permission_mode = "ask"
+        self._busy = False
+        self._pending_tool_blocks.clear()
+        self._pending_permission_blocks.clear()
+        self._current_llm = None
+        self._last_llm_block = None
+        self._subagent_run_ids.clear()
+        self._subagent_start_times.clear()
+        await self.query_one("#log-view", VerticalScroll).remove_children()
+        self._append(SelectableStatic(
+            f"[cyan]已恢复会话[/cyan]  {_esc(self._session_id)}  "
+            f"{_esc(restored.get('title', ''))}", classes="run-header",
+        ))
+        self._render_history(restored.get("messages", []))
+        for warning in restored.get("warnings", []):
+            self._append(SelectableStatic(f"[yellow]{_esc(warning)}[/yellow]", classes="log-line"))
+        self._append(SelectableStatic(
+            "[dim]历史已加载。请输入下一条消息继续。[/dim]", classes="log-line"
+        ))
+
+    # 将保存的消息渲染为只读对话与工具块，不创建挂起审批或触发工具执行
+    def _render_history(self, messages: list[dict[str, Any]]) -> None:
+        tools: dict[str, ToolCallBlock] = {}
+        for message in messages:
+            role = message.get("role")
+            content = message.get("content", "")
+            blocks = [{"type": "text", "text": content}] if isinstance(content, str) else content
+            for block in blocks:
+                if block.get("type") == "text":
+                    text = str(block.get("text", ""))
+                    if role == "assistant":
+                        answer = LLMStreamBlock()
+                        answer.append_token(text)
+                        answer.finalize_markdown()
+                        self._last_llm_block = answer
+                        self._append(answer)
+                    else:
+                        self._append(SelectableStatic(
+                            f"[bold]你[/bold]  {_esc(text)}", classes="user-turn"
+                        ))
+                elif role == "assistant" and block.get("type") == "tool_use":
+                    params: Any = block.get("input", {})
+                    tool = ToolCallBlock(
+                        str(block.get("name", "")), params if isinstance(params, dict) else {}
+                    )
+                    tools[str(block.get("id", ""))] = tool
+                    self._append(tool)
+                elif role == "user" and block.get("type") == "tool_result":
+                    completed_tool = tools.get(str(block.get("tool_use_id", "")))
+                    if completed_tool is not None:
+                        output = block.get("content", "")
+                        if isinstance(output, list):
+                            output = "\n".join(str(item.get("text", "")) for item in output)
+                        completed_tool.set_result(
+                            str(output), None, is_error=bool(block.get("is_error"))
+                        )
 
     # 兜底：渲染类异常（markup/style/visual 解析失败）只影响显示，不该让 TUI 直接退出。
     # Textual 默认对未处理异常会打印 traceback 并结束 App；其余异常仍走默认处理，
@@ -1185,6 +1302,19 @@ class JarvisTuiApp(App[None]):
 
     # 根据事件 type 路由到对应渲染逻辑；捕获异常防止 socket loop 因单个事件崩溃
     def _handle_event(self, event: dict[str, Any]) -> None:
+        if self._session_id is not None and self._replay_run_id is None:
+            event_session = event.get("session_id")
+            if event_session is not None and event_session != self._session_id:
+                return
+            run_id = event.get("run_id")
+            if run_id is not None and event_session == self._session_id:
+                self._session_run_ids.add(str(run_id))
+            if event.get("type") == "subagent.started" and (
+                event.get("parent_run_id") in self._session_run_ids
+            ):
+                self._session_run_ids.add(str(run_id))
+            if run_id is not None and run_id not in self._session_run_ids:
+                return
         try:
             self._handle_event_inner(event)
         except Exception:

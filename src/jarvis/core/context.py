@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -20,6 +21,10 @@ class ExecutionContext:
     result: str = ""
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
+    message_sink: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
+    replacement_sink: Callable[[list[dict[str, Any]]], None] | None = field(
+        default=None, repr=False
+    )
 
     # 初始化消息历史，优先使用 session 完整回放内容
     def __post_init__(self) -> None:
@@ -50,7 +55,10 @@ class ExecutionContext:
 
     # 将 LLM 响应的 content blocks 追加为 assistant 消息
     def add_assistant_message(self, content: list[Any]) -> None:
-        self.messages.append({"role": "assistant", "content": content})
+        message = {"role": "assistant", "content": content}
+        if self.message_sink is not None:
+            self.message_sink(message)
+        self.messages.append(message)
 
     # 将工具调用结果追加为 user 消息；同一步的多个结果共享同一条消息
     def add_tool_result(
@@ -64,6 +72,10 @@ class ExecutionContext:
         if is_error:
             block["is_error"] = True
 
+        # 每个结果单独落盘，避免后续合并内存消息时遗漏已执行的工具结果
+        if self.message_sink is not None:
+            self.message_sink({"role": "user", "content": [block]})
+
         last = self.messages[-1] if self.messages else None
         if (
             last is not None
@@ -75,6 +87,12 @@ class ExecutionContext:
             last["content"].append(block)
         else:
             self.messages.append({"role": "user", "content": [block]})
+
+    # 先持久化新的有效上下文，再替换内存消息，保持压缩后的恢复状态一致
+    def replace_messages(self, messages: list[dict[str, Any]]) -> None:
+        if self.replacement_sink is not None:
+            self.replacement_sink(messages)
+        self.messages = messages
 
     # 返回 True 表示 loop 应停止（状态不再是 running）
     def is_done(self) -> bool:

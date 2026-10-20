@@ -5,6 +5,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from jarvis.core.bus.events import RunFinishedEvent, RunStartedEvent
 from jarvis.core.compact.compactor import Compactor
@@ -20,7 +21,7 @@ from jarvis.core.memory.loader import load_context_file
 from jarvis.core.permissions.manager import PermissionManager
 from jarvis.core.runs import RUNS_DIR, new_run_id
 from jarvis.core.session.model import Session
-from jarvis.core.session.store import SessionStore
+from jarvis.core.session.store import SessionPersistenceError, SessionStore
 from jarvis.core.subagent.registry import BackgroundTaskRegistry
 from jarvis.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from jarvis.core.task.manager import TaskManager
@@ -190,11 +191,28 @@ class AgentRunner:
             project_context=project_ctx,
             system_prompt_override=system_prompt_override,
         )
-        prefill_len = len(history)
+        if session is not None and store is not None:
+            # 捕获当前会话和 run，持久化回调先于任何工具副作用执行
+            def save_message(message: dict[str, Any]) -> None:
+                assert store is not None and session is not None
+                store.append_message(
+                    session.id, str(message["role"]), message["content"], run_id=run_id
+                )
+
+            context.message_sink = save_message
+
+            # 自动压缩后同步替换有效历史，避免恢复时重新载入压缩前内容
+            def save_replacement(messages: list[dict[str, Any]]) -> None:
+                assert store is not None and session is not None
+                store.write_compacted(session.id, messages)
+
+            context.replacement_sink = save_replacement
 
         async with EventWriter(run_path / "events.jsonl") as writer:
             writer.subscribe(bus)
-            await bus.publish(RunStartedEvent(run_id=run_id, goal=goal, ts=_now()))
+            await bus.publish(RunStartedEvent(
+                run_id=run_id, goal=goal, session_id=session.id if session else None, ts=_now()
+            ))
 
             cancelled = False
             try:
@@ -240,6 +258,9 @@ class AgentRunner:
                 cancelled = True
                 if not context.is_done():
                     context.mark_failed("cancelled")
+            except SessionPersistenceError:
+                logging.getLogger(__name__).exception("session history could not be saved")
+                context.mark_failed("storage_error")
             except Exception:
                 logging.getLogger(__name__).exception(
                     "agent run failed run_id=%s step=%d", run_id, context.step
@@ -256,9 +277,6 @@ class AgentRunner:
                     ts=_now(),
                 )
             )
-
-        if session is not None and store is not None:
-            store.append_messages(session.id, context.messages[prefill_len:], run_id=run_id)
 
         if cancelled:
             raise asyncio.CancelledError()

@@ -15,6 +15,7 @@ class RunStartedEvent(BaseModel):
     type: Literal["run.started"] = "run.started"
     run_id: str
     goal: str
+    session_id: str | None = None
     ts: str  # ISO 8601
 
 
@@ -200,6 +201,7 @@ class SkillInvokedEvent(BaseModel):
     skill_name: str
     arguments: str
     run_id: str
+    session_id: str | None = None
     ts: str
 
 

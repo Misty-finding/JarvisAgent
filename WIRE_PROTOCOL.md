@@ -537,6 +537,214 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 }
 ```
 
+### SessionListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.list",
+      "default": "session.list",
+      "title": "Type",
+      "type": "string"
+    }
+  },
+  "title": "SessionListCommand",
+  "type": "object"
+}
+```
+
+### SessionListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `sessions` | `array` | yes |
+| `warnings` | `array` | no |
+
+```json
+{
+  "$defs": {
+    "SessionSummary": {
+      "properties": {
+        "session_id": {
+          "title": "Session Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        },
+        "updated_at": {
+          "title": "Updated At",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "active",
+            "waiting_for_input",
+            "closed"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "last_run_state": {
+          "anyOf": [
+            {
+              "enum": [
+                "running",
+                "completed",
+                "failed",
+                "interrupted"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Last Run State"
+        },
+        "busy": {
+          "default": false,
+          "title": "Busy",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "session_id",
+        "title",
+        "updated_at",
+        "status"
+      ],
+      "title": "SessionSummary",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "sessions": {
+      "items": {
+        "$ref": "#/$defs/SessionSummary"
+      },
+      "title": "Sessions",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "sessions"
+  ],
+  "title": "SessionListResult",
+  "type": "object"
+}
+```
+
+### SessionResumeCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.resume",
+      "default": "session.resume",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "pattern": "^sess-[A-Za-z0-9_-]+$",
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionResumeCommand",
+  "type": "object"
+}
+```
+
+### SessionResumeResult
+
+| Field | Type | Required |
+|---|---|---|
+| `session_id` | `string` | yes |
+| `status` | `string` | yes |
+| `title` | `string` | yes |
+| `messages` | `array` | yes |
+| `run_ids` | `array` | yes |
+| `warnings` | `array` | no |
+
+```json
+{
+  "properties": {
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "active",
+        "waiting_for_input",
+        "closed"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "title": {
+      "title": "Title",
+      "type": "string"
+    },
+    "messages": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Messages",
+      "type": "array"
+    },
+    "run_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Run Ids",
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Warnings",
+      "type": "array"
+    }
+  },
+  "required": [
+    "session_id",
+    "status",
+    "title",
+    "messages",
+    "run_ids"
+  ],
+  "title": "SessionResumeResult",
+  "type": "object"
+}
+```
+
 ### SessionCloseCommand
 
 | Field | Type | Required |
@@ -691,6 +899,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | `type` | `string` | no |
 | `run_id` | `string` | yes |
 | `goal` | `string` | yes |
+| `session_id` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -709,6 +918,18 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
     "goal": {
       "title": "Goal",
       "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
     },
     "ts": {
       "title": "Ts",
@@ -1645,6 +1866,66 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 }
 ```
 
+### SkillInvokedEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `skill_name` | `string` | yes |
+| `arguments` | `string` | yes |
+| `run_id` | `string` | yes |
+| `session_id` | `string | null` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "skill.invoked",
+      "default": "skill.invoked",
+      "title": "Type",
+      "type": "string"
+    },
+    "skill_name": {
+      "title": "Skill Name",
+      "type": "string"
+    },
+    "arguments": {
+      "title": "Arguments",
+      "type": "string"
+    },
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "skill_name",
+    "arguments",
+    "run_id",
+    "ts"
+  ],
+  "title": "SkillInvokedEvent",
+  "type": "object"
+}
+```
+
 ## Error Codes
 
 | Code | Name | Meaning |
@@ -1655,3 +1936,7 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | -32602 | Invalid Params | Parameter validation failed |
 | -32603 | Internal Error | Handler raised an unhandled exception |
 | -32000 | Application Error | e.g. another run already in progress |
+| -32010 | Session Not Found | Session metadata does not exist |
+| -32011 | Session Closed | Resume a closed chat before sending messages |
+| -32012 | Session Busy | Session is still running |
+| -32013 | Session Invalid | Wrong workspace, unsupported metadata or corrupt history |

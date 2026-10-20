@@ -23,7 +23,12 @@ from jarvis.core.logging_setup import setup_logging
 def main() -> None:
     parser = argparse.ArgumentParser(prog="jarvis", description="Jarvis CLI")
     parser.add_argument("--version", action="store_true", help="Print version and exit")
-    parser.add_argument("--replay", metavar="RUN_ID", help="Replay a past run in the TUI")
+    session_args = parser.add_mutually_exclusive_group()
+    session_args.add_argument("--replay", metavar="RUN_ID", help="Replay a past run in the TUI")
+    session_args.add_argument(
+        "--resume", nargs="?", const="", metavar="SESSION_ID",
+        help="Select a past session in the TUI, or resume the specified session",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser("ping", help="Ping the core daemon")
@@ -46,6 +51,8 @@ def main() -> None:
     trace_parser.add_argument("--follow", "-f", action="store_true", help="Follow new records")
 
     args = parser.parse_args()
+    if args.resume is not None and args.command is not None:
+        parser.error("--resume opens the TUI and cannot be combined with a subcommand")
 
     if args.version:
         cmd_version()
@@ -55,7 +62,10 @@ def main() -> None:
     setup_logging(config)
 
     if args.command is None:
-        cmd_launch(config, replay_run_id=args.replay)
+        if args.resume is None:
+            cmd_launch(config, replay_run_id=args.replay)
+        else:
+            cmd_launch(config, resume_session_id=args.resume)
     elif args.command == "ping":
         config = resolve_runtime_config(config)
         cmd_ping(config)

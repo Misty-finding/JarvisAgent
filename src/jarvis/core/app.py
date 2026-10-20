@@ -33,6 +33,10 @@ from jarvis.core.bus.commands import (
     SessionCreateResult,
     SessionGetHistoryCommand,
     SessionGetHistoryResult,
+    SessionListCommand,
+    SessionListResult,
+    SessionResumeCommand,
+    SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
 )
@@ -131,6 +135,21 @@ class CoreApp:
         cmd = SessionCreateCommand.model_validate(params)
         session = await self._sessions.create(mode=cmd.mode, title=cmd.title)
         return SessionCreateResult(session_id=session.id, status=session.status)
+
+    # 列出当前项目的历史聊天会话，不读取全部消息或调用模型
+    async def _session_list_handler(self, params: dict[str, Any]) -> SessionListResult:
+        assert self._sessions is not None
+        SessionListCommand.model_validate(params)
+        return await self._sessions.list_sessions()
+
+    # 恢复指定会话并返回只读历史，权限模式重新设置为 Ask
+    async def _session_resume_handler(self, params: dict[str, Any]) -> SessionResumeResult:
+        assert self._sessions is not None
+        cmd = SessionResumeCommand.model_validate(params)
+        result = await self._sessions.resume(cmd.session_id)
+        if self._permission_manager is not None:
+            self._permission_manager.set_session_mode(cmd.session_id, "ask")
+        return result
 
     # 向 session 发送一条用户消息并同步等待对应 run 完成
     async def _session_send_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
@@ -303,6 +322,8 @@ class CoreApp:
         server.register("agent.run", self._agent_run_handler)
         server.register("event.subscribe", self._subscribe_handler)
         server.register("session.create", self._session_create_handler)
+        server.register("session.list", self._session_list_handler)
+        server.register("session.resume", self._session_resume_handler)
         server.register("session.send_message", self._session_send_handler)
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, Discriminator
+from pydantic import BaseModel, Discriminator, Field
 
-from jarvis.core.session.model import SessionMode, SessionStatus
+from jarvis.core.session.model import RunState, SessionMode, SessionStatus
 
 
 class PingCommand(BaseModel):
@@ -50,6 +50,38 @@ class SessionCreateCommand(BaseModel):
 class SessionCreateResult(BaseModel):
     session_id: str
     status: SessionStatus
+
+
+class SessionListCommand(BaseModel):
+    type: Literal["session.list"] = "session.list"
+
+
+class SessionSummary(BaseModel):
+    session_id: str
+    title: str
+    updated_at: str
+    status: SessionStatus
+    last_run_state: RunState | None = None
+    busy: bool = False
+
+
+class SessionListResult(BaseModel):
+    sessions: list[SessionSummary]
+    warnings: list[str] = Field(default_factory=list)
+
+
+class SessionResumeCommand(BaseModel):
+    type: Literal["session.resume"] = "session.resume"
+    session_id: str = Field(pattern=r"^sess-[A-Za-z0-9_-]+$")
+
+
+class SessionResumeResult(BaseModel):
+    session_id: str
+    status: SessionStatus
+    title: str
+    messages: list[dict[str, Any]]
+    run_ids: list[str]
+    warnings: list[str] = Field(default_factory=list)
 
 
 class SessionSendMessageCommand(BaseModel):
@@ -118,6 +150,8 @@ Command = Annotated[
     | AgentRunCommand
     | EventSubscribeCommand
     | SessionCreateCommand
+    | SessionListCommand
+    | SessionResumeCommand
     | SessionSendMessageCommand
     | SessionGetHistoryCommand
     | SessionCloseCommand

@@ -80,10 +80,10 @@ class Compactor:
         if result is None:
             return None
 
-        context.messages = [
+        context.replace_messages([
             {"role": "user", "content": result.summary_text},
             {"role": "assistant", "content": "Understood, I'll continue from this summary."},
-        ]
+        ])
         self._write_summary(result.summary_text)
         await self._bus.publish(
             ContextCompactedEvent(
