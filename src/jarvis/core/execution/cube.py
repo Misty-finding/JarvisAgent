@@ -22,6 +22,8 @@ from jarvis.core.bus.events import SandboxEventType, SandboxLifecycleEvent
 from jarvis.core.events.bus import EventBus
 from jarvis.core.execution import worker
 from jarvis.core.execution.base import ExecutionUnavailable, execution_run_id
+from jarvis.core.execution.catalog import SandboxCatalog
+from jarvis.core.execution.locking import execution_lock
 from jarvis.core.execution.project import collect_project, load_object, save_private
 from jarvis.core.execution.settings import ExecutionConfig
 from jarvis.core.tools.base import ToolResult
@@ -53,6 +55,13 @@ class CubeBackend:
         self._session_id = session_id
         self._run_id = run_id
         self._destroy_lock = asyncio.Lock()
+        self._cancel_lock = asyncio.Lock()
+        self._execution_id = uuid.uuid4().hex
+        self._active_execution_id: str | None = None
+        self._cancelled = False
+        self._prepared = False
+        self._import_complete = False
+        self._cancel_unconfirmed = False
         exclusions = list(config.exclude)
         for path in [state_dir, *(private_paths or [])]:
             resolved = path.resolve()
@@ -138,7 +147,7 @@ class CubeBackend:
     async def _emit(
         self,
         event_type: SandboxEventType,
-        operation: Literal["prepare", "execute", "export", "release", "destroy"],
+        operation: Literal["prepare", "execute", "export", "release", "destroy", "cancel"],
         *,
         reason: str | None = None,
         tool_name: str | None = None,
@@ -150,6 +159,7 @@ class CubeBackend:
                 session_id=self._session_id,
                 run_id=execution_run_id.get() or self._run_id,
                 sandbox_id=self.sandbox_id,
+                project_workspace=str(self.workspace),
                 operation=operation,
                 reason=reason,
                 tool_name=tool_name,
@@ -174,7 +184,7 @@ class CubeBackend:
                     "Sandbox mapping is invalid. Start a new Jarvis session."
                 )
             self._data = saved["sandbox"]
-            if not (self.state_dir / "baseline.json").exists() or not saved.get("import_complete"):
+            if not (self.state_dir / "baseline.json").exists():
                 raise ExecutionUnavailable(
                     "Previous sandbox import was interrupted. Start a new session."
                 )
@@ -184,6 +194,14 @@ class CubeBackend:
                 f"/sandboxes/{self.sandbox_id}/timeout",
                 json={"timeout": self.config.sandbox_timeout},
             )
+            previous = saved.get("active_execution_id")
+            if previous:
+                await self._end_execution(str(previous), "cancel_execution")
+            complete = bool(saved.get("import_complete"))
+            await self._begin_execution(import_complete=complete)
+            if not complete:
+                await self._import_project(load_object(self.state_dir / "baseline.json"))
+                self._save(import_complete=True)
             await self._emit("sandbox.reused", "prepare", started=started)
             return
         await self._emit("sandbox.starting", "prepare", reason="new_session")
@@ -191,6 +209,7 @@ class CubeBackend:
             raise ExecutionUnavailable("CubeSandbox template is not configured")
         # Collect the copy before creating a VM, so import failures cannot leak VMs.
         baseline = await asyncio.to_thread(collect_project, self.workspace, self._copy_config)
+        save_private(self.state_dir / "baseline.json", baseline)
         payload = {
             "templateID": self.template,
             "timeout": self.config.sandbox_timeout,
@@ -200,28 +219,89 @@ class CubeBackend:
                 "allowOut": self.config.allow_out,
                 "denyOut": self.config.deny_out,
             },
+            "metadata": {
+                "jarvis_session_id": self._session_id or "",
+                "jarvis_workspace": str(self.workspace),
+            },
         }
         try:
-            self._data = await self._control("POST", "/sandboxes", json=payload)
+            catalog = SandboxCatalog(self.config)
+            with execution_lock(catalog.root / "creation"):
+                listing = await self._control("GET", "/sandboxes")
+                if len(listing) >= self.config.max_running_sandboxes:
+                    raise ExecutionUnavailable(
+                        "Sandbox limit reached. Open /sandbox to manage existing instances."
+                    )
+                creation = asyncio.create_task(self._control("POST", "/sandboxes", json=payload))
+                try:
+                    self._data = await asyncio.shield(creation)
+                except asyncio.CancelledError:
+                    self._data = await asyncio.shield(creation)
+                    self._save(import_complete=False)
+                    raise
             self._save(import_complete=False)
             await self._emit("sandbox.created", "prepare", started=started)
-            save_private(self.state_dir / "baseline.json", baseline)
-            # Bounded batches avoid envd/argv request limits for larger projects.
-            batch: list[dict[str, Any]] = []
-            size = 0
-            for item in baseline["files"]:
-                if size + len(item["content"]) > 2_000_000 and batch:
-                    await self._import_batch(batch)
-                    batch, size = [], 0
-                batch.append({key: item[key] for key in ("path", "content", "executable")})
-                size += len(item["content"])
-            await self._import_batch(batch)
+            await self._begin_execution(import_complete=False)
+            await self._import_project(baseline)
             self._save(import_complete=True)
             await self._emit("sandbox.ready", "prepare", started=started)
         except BaseException:
-            if self._data:
-                await asyncio.shield(self.destroy(reason="initialization_interrupted"))
+            # Keep even partially initialized instances visible for explicit user cleanup.
             raise
+
+    async def _begin_execution(self, *, import_complete: bool = True) -> None:
+        value = await self._worker("initialize_execution", {})
+        if not value.get("initialized"):
+            raise ExecutionUnavailable("Sandbox cannot provide managed task cancellation")
+        self._active_execution_id = self._execution_id
+        self._prepared = True
+        self._save(import_complete=import_complete)
+
+    async def _import_project(self, baseline: dict[str, Any]) -> None:
+        # Only incomplete initialization is replayed; completed workspaces are never reimported.
+        batch: list[dict[str, Any]] = []
+        size = 0
+        for item in baseline["files"]:
+            if size + len(item["content"]) > 2_000_000 and batch:
+                await self._import_batch(batch)
+                batch, size = [], 0
+            batch.append({key: item[key] for key in ("path", "content", "executable")})
+            size += len(item["content"])
+        await self._import_batch(batch)
+
+    async def _end_execution(self, execution_id: str, action: str) -> None:
+        value = await self._worker(action, {}, execution_id=execution_id)
+        if not value.get("stopped"):
+            raise ExecutionUnavailable("Task process termination could not be confirmed")
+
+    async def cancel_run(self) -> None:
+        async with self._cancel_lock:
+            if not self._data or self._cancelled:
+                return
+            started = time.monotonic()
+            await self._emit("sandbox.cancel_requested", "cancel")
+            try:
+                await self._end_execution(self._execution_id, "cancel_execution")
+            except ExecutionUnavailable:
+                self._broken = True
+                self._cancel_unconfirmed = True
+                self._active_execution_id = self._execution_id
+                self._save(import_complete=self._import_complete)
+                await self._emit(
+                    "sandbox.cancel_failed",
+                    "cancel",
+                    reason="termination_unconfirmed",
+                    started=started,
+                )
+                raise
+            self._cancelled = True
+            self._broken = False
+            self._cancel_unconfirmed = False
+            self._active_execution_id = None
+            self._save(import_complete=self._import_complete)
+            await self._emit(
+                "sandbox.cancelled", "cancel", reason="instance_retained", started=started
+            )
 
     async def _import_batch(self, files: list[dict[str, Any]]) -> None:
         result = await self._worker("import", {"files": files})
@@ -229,6 +309,7 @@ class CubeBackend:
             raise ExecutionUnavailable("Sandbox project import failed; start a new session.")
 
     def _save(self, *, import_complete: bool, invalidated: bool = False) -> None:
+        self._import_complete = import_complete
         save_private(
             self.state_dir / "sandbox.json",
             {
@@ -239,8 +320,26 @@ class CubeBackend:
                 "import_complete": import_complete,
                 "invalidated": invalidated,
                 "network_policy": self._network_policy(),
+                "active_execution_id": self._active_execution_id,
+                "cancel_unconfirmed": self._cancel_unconfirmed,
+                "destroyed": self._destroyed,
             },
         )
+        if self._data and self._session_id:
+            metadata = self.state_dir.parent / "meta.json"
+            title = load_object(metadata).get("title", "") if metadata.exists() else ""
+            SandboxCatalog(self.config).record(
+                str(self.sandbox_id),
+                {
+                    "sandbox_id": self.sandbox_id,
+                    "session_id": self._session_id,
+                    "title": title,
+                    "workspace": str(self.workspace),
+                    "state_dir": str(self.state_dir.resolve()),
+                    "api_url": self.api_url,
+                    "destroyed": self._destroyed,
+                },
+            )
 
     def _network_policy(self) -> dict[str, Any]:
         return {
@@ -250,14 +349,14 @@ class CubeBackend:
         }
 
     async def destroy(self, *, reason: str = "user_stop") -> None:
-        """Destroy on cancellation: terminates all processes, including detached descendants."""
+        """Explicit user destruction only; task cancellation never deletes the instance."""
         self._broken = True
         async with self._destroy_lock:
             if self._data and not self._destroyed:
                 started = time.monotonic()
                 await self._emit("sandbox.stopping", "destroy", reason=reason)
                 try:
-                    self._save(import_complete=True, invalidated=True)
+                    self._save(import_complete=self._import_complete, invalidated=True)
                     await self._control("DELETE", f"/sandboxes/{self.sandbox_id}")
                 except (ExecutionUnavailable, OSError):
                     await self._emit(
@@ -268,18 +367,24 @@ class CubeBackend:
                     )
                     raise
                 self._destroyed = True
+                self._active_execution_id = None
+                self._save(import_complete=self._import_complete, invalidated=True)
                 await self._emit("sandbox.destroyed", "destroy", reason=reason, started=started)
 
     async def release(self) -> None:
         if self._data and not self._destroyed:
+            if self._prepared and not self._cancelled and not self._broken:
+                await self._end_execution(self._execution_id, "finish_execution")
+                self._active_execution_id = None
+                self._save(import_complete=self._import_complete)
             await self._emit(
                 "sandbox.released",
                 "release",
                 reason="state_unknown" if self._broken else "instance_retained",
             )
 
-    async def _process(self, command: str, timeout: float = 110) -> str:
-        if self._broken or not self._data:
+    async def _process(self, command: str, timeout: float = 110, *, control: bool = False) -> str:
+        if (self._broken and not control) or not self._data:
             raise ExecutionUnavailable(
                 "Sandbox unavailable; start a new session. No host fallback."
             )
@@ -360,9 +465,17 @@ class CubeBackend:
                     )
         return output.decode("utf-8")
 
-    async def _worker(self, action: str, params: dict[str, Any]) -> Any:
+    async def _worker(
+        self, action: str, params: dict[str, Any], *, execution_id: str | None = None
+    ) -> Any:
         request = base64.b64encode(
-            json.dumps({"action": action, "params": params}).encode()
+            json.dumps(
+                {
+                    "action": action,
+                    "params": params,
+                    "execution_id": execution_id or self._execution_id,
+                }
+            ).encode()
         ).decode()
         # Source and argument are trusted encodings, quoted independently from task values.
         code = (
@@ -370,7 +483,7 @@ class CubeBackend:
             f"exec(compile(base64.b64decode('{self._source}'),'<jarvis-worker>','exec'), ns); "
             "ns['main'](input())"
         )
-        command = f"python3 -c {shlex.quote(code)} <<'JARVIS_REQUEST'\n{request}\nJARVIS_REQUEST"
+        command = f"python3 -I -c {shlex.quote(code)} <<'JARVIS_REQUEST'\n{request}\nJARVIS_REQUEST"
         try:
             if len(command) > 60000:
                 # Linux has a per-argument limit even when envd accepts a larger HTTP body.
@@ -401,8 +514,9 @@ class CubeBackend:
                     f"from pathlib import Path; p=Path('{path}'); "
                     "r=p.read_text(); p.unlink(); ns['main'](r)",
                 )
-                command = "python3 -c " + shlex.quote(code)
-            response = json.loads(await self._process(command, timeout=135))
+                command = "python3 -I -c " + shlex.quote(code)
+            control = action in ("initialize_execution", "cancel_execution", "finish_execution")
+            response = json.loads(await self._process(command, timeout=135, control=control))
             if not response.get("ok"):
                 return {
                     "content": response.get("error", "Remote operation failed"),
@@ -411,7 +525,6 @@ class CubeBackend:
                 }
             return response["result"]
         except asyncio.CancelledError:
-            await asyncio.shield(self.destroy(reason="cancelled"))
             raise
         except (httpx.HTTPError, ValueError, KeyError, ExecutionUnavailable) as exc:
             self._broken = True
@@ -420,10 +533,14 @@ class CubeBackend:
             ) from exc
 
     async def invoke(self, name: str, params: dict[str, object]) -> ToolResult:
+        if self._cancelled:
+            raise asyncio.CancelledError()
         started = time.monotonic()
         await self._emit("sandbox.using", "execute", tool_name=name)
         try:
             value = await self._worker(name, params)
+            if self._cancelled:
+                raise asyncio.CancelledError()
         except ExecutionUnavailable:
             await self._emit(
                 "sandbox.failed",

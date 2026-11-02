@@ -78,6 +78,7 @@ class _CapturingProvider:
 
 def _config(max_steps: int = 5) -> JarvisConfig:
     cfg = JarvisConfig()
+    cfg.execution.backend = "local"
     cfg.agent.max_steps = max_steps
     return cfg
 

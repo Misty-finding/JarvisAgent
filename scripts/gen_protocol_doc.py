@@ -8,8 +8,6 @@ import sys
 from pathlib import Path
 
 from jarvis.core.bus.commands import (
-    SandboxManageCommand,
-    SandboxManageResult,
     AgentRunCommand,
     AgentRunResult,
     EventSubscribeCommand,
@@ -18,6 +16,10 @@ from jarvis.core.bus.commands import (
     ModelListResult,
     PingCommand,
     PongResult,
+    SandboxListCommand,
+    SandboxListResult,
+    SandboxManageCommand,
+    SandboxManageResult,
     SessionCancelCommand,
     SessionCancelResult,
     SessionCloseCommand,
@@ -37,7 +39,6 @@ from jarvis.core.bus.commands import (
 )
 from jarvis.core.bus.envelope import EventPushEnvelope
 from jarvis.core.bus.events import (
-    SandboxLifecycleEvent,
     CoreStartedEvent,
     LlmModelSelectedEvent,
     LlmTokenEvent,
@@ -45,6 +46,7 @@ from jarvis.core.bus.events import (
     LogLineEvent,
     RunFinishedEvent,
     RunStartedEvent,
+    SandboxLifecycleEvent,
     SessionClosedEvent,
     SessionCreatedEvent,
     SessionMessageReceivedEvent,
@@ -222,6 +224,8 @@ def generate() -> str:
         "\n",
         _model_section("SessionCancelResult", SessionCancelResult),
         "\n",
+        _model_section("SandboxListCommand", SandboxListCommand),
+        _model_section("SandboxListResult", SandboxListResult),
         _model_section("SandboxManageCommand", SandboxManageCommand),
         "\n",
         _model_section("SandboxManageResult", SandboxManageResult),

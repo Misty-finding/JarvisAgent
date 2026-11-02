@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -124,20 +124,46 @@ def get_config() -> JarvisConfig:
     project_env = dotenv_values(Path(".env"))
     system_env: Mapping[str, str | None] = os.environ
 
-    # JARVIS_CONFIG 的来源本身也遵循 系统 > 项目 .env > 全局 .env。
-    explicit = (
-        system_env.get("JARVIS_CONFIG")
-        or project_env.get("JARVIS_CONFIG")
-        or global_env.get("JARVIS_CONFIG")
-    )
+    # 只有系统或用户全局配置可以选择安全策略文件。
+    explicit = system_env.get("JARVIS_CONFIG") or global_env.get("JARVIS_CONFIG")
 
-    def apply_config_file(config_path: Path) -> None:
+    def apply_config_file(config_path: Path, *, project: bool = False) -> None:
         if config_path.exists():
             try:
                 with open(config_path, "rb") as f:
                     data = tomllib.load(f)
             except tomllib.TOMLDecodeError as e:
                 raise SystemExit(f"Config parse error ({config_path}): {e}") from e
+            if project and "execution" in data:
+                execution = data["execution"]
+                if not isinstance(execution, dict):
+                    raise SystemExit("Config error: [execution] must be a table")
+                try:
+                    parse_execution(execution)
+                except ValueError as exc:
+                    raise SystemExit(f"Config error: {exc}") from exc
+                allowed = {
+                    "include_uncommitted",
+                    "exclude",
+                    "max_files",
+                    "max_file_bytes",
+                    "max_total_bytes",
+                }
+                # Project-controlled files cannot disable isolation or replace management endpoints.
+                selected = {key: value for key, value in execution.items() if key in allowed}
+                if "exclude" in selected:
+                    selected["exclude"] = list(
+                        dict.fromkeys(
+                            [
+                                *config.execution.exclude,
+                                *selected["exclude"],
+                            ]
+                        )
+                    )
+                for name in ("max_files", "max_file_bytes", "max_total_bytes"):
+                    if name in selected and type(selected[name]) is int:
+                        selected[name] = min(selected[name], getattr(config.execution, name))
+                data = {**data, "execution": selected}
             _apply_toml(config, data)
 
     # 明确分层，避免 load_dotenv 修改进程环境后造成跨项目配置泄漏。
@@ -148,8 +174,20 @@ def get_config() -> JarvisConfig:
         apply_config_file(Path(_DEFAULT_CONFIG_PATH).expanduser())
         _apply_env(config, global_env)
         local_config = Path(".jarvis/config.toml")
-        apply_config_file(local_config)
-    _apply_env(config, project_env)
+        apply_config_file(local_config, project=True)
+    _apply_env(
+        config,
+        {
+            name: value
+            for name, value in project_env.items()
+            if name
+            not in (
+                "JARVIS_EXECUTION_BACKEND",
+                "JARVIS_CUBE_CONNECTION_FILE",
+                "JARVIS_SANDBOX_REGISTRY_DIR",
+            )
+        },
+    )
     _apply_env(config, system_env)
     credentials = {**global_env, **project_env, **system_env}
     for model in config.llm.models.values():
@@ -176,7 +214,9 @@ def _apply_toml(config: JarvisConfig, data: dict[str, Any]) -> None:
 
     if "execution" in data:
         try:
-            config.execution = parse_execution(data["execution"])
+            if not isinstance(data["execution"], dict):
+                raise ValueError("[execution] must be a table")
+            config.execution = parse_execution({**asdict(config.execution), **data["execution"]})
         except ValueError as exc:
             raise SystemExit(f"Config error: {exc}") from exc
 
@@ -440,6 +480,7 @@ def _apply_env(config: JarvisConfig, env: Mapping[str, str | None]) -> None:
     for name, attr in (
         ("JARVIS_EXECUTION_BACKEND", "backend"),
         ("JARVIS_CUBE_CONNECTION_FILE", "connection_file"),
+        ("JARVIS_SANDBOX_REGISTRY_DIR", "registry_dir"),
     ):
         if env.get(name) is not None:
             setattr(config.execution, attr, env[name])

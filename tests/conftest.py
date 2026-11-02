@@ -12,6 +12,19 @@ from pathlib import Path
 import pytest
 
 
+def _stop_daemon(proc: subprocess.Popen[bytes]) -> None:
+    # The Windows venv launcher owns a child Python process; terminate the whole test tree.
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"], capture_output=True)
+    else:
+        proc.terminate()
+    try:
+        proc.wait(timeout=3)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+
+
 @pytest.fixture
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
@@ -41,7 +54,8 @@ async def running_daemon(
 
     proc = subprocess.Popen([sys.executable, "-m", "jarvis.core"], env=env)
 
-    deadline = time.monotonic() + 10.0
+    # Certificate loading during a fresh Windows HTTP client can exceed ten seconds.
+    deadline = time.monotonic() + 25.0
     while time.monotonic() < deadline:
         await asyncio.sleep(0.05)
         try:
@@ -52,15 +66,9 @@ async def running_daemon(
         except (ConnectionRefusedError, OSError):
             pass
     else:
-        proc.terminate()
-        proc.wait()
-        pytest.fail("Daemon did not start within 10 seconds")
+        _stop_daemon(proc)
+        pytest.fail("Daemon did not start within 25 seconds")
 
     yield proc
 
-    proc.terminate()
-    try:
-        proc.wait(timeout=2)
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
+    _stop_daemon(proc)

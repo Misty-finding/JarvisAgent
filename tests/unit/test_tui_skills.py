@@ -34,7 +34,7 @@ async def test_tui_skill_menu_paginates_and_refreshes(
         await pilot.pause()
         popup = app.query_one(SlashCompleteWidget)
         total = len(popup._filtered)
-        assert total == 33  # 30 个仓库内编码 Skill 和三个内建命令
+        assert total == 34  # 30 个仓库内编码 Skill 和四个内建命令
         for _ in range(total - 1):
             popup.move_down()
         plain = Content.from_markup(popup.content).plain

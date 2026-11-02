@@ -56,6 +56,7 @@ async def resume_core(
 
     core = CoreApp()
     core._config = JarvisConfig(workspace=tmp_path)
+    core._config.execution.backend = "local"
     core._permission_manager = PermissionManager()
     core._broadcaster = IpcEventBroadcaster()
     core._bus.subscribe(core._broadcaster.handle)

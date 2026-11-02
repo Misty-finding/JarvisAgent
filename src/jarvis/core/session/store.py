@@ -136,6 +136,12 @@ class SessionStore:
 
     async def handle_sandbox_event(self, event: BaseModel) -> None:
         if isinstance(event, SandboxLifecycleEvent) and event.session_id:
+            if (
+                event.project_workspace
+                and (Path(event.project_workspace).resolve() / ".jarvis" / "sessions")
+                != self._root.resolve()
+            ):
+                return
             self._append_row(
                 event.session_id,
                 {

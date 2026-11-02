@@ -68,7 +68,7 @@ async def test_failed_prepare_and_destroy_are_reported_truthfully(
 
     bus.subscribe(collect)
     backend = CubeBackend(
-        ExecutionConfig(template="fixture"),
+        ExecutionConfig(template="fixture", registry_dir=str(tmp_path / "registry")),
         tmp_path,
         tmp_path / ".jarvis",
         bus=bus,

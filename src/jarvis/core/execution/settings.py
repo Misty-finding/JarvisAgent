@@ -8,14 +8,16 @@ from typing import Any
 class ExecutionConfig:
     """Core-only connection settings; never injected into task environments."""
 
-    backend: str = "local"
+    backend: str = "cubesandbox"
     connection_file: str = ""
     api_url: str = "http://127.0.0.1:13000"
     api_key_env: str = "CUBE_API_KEY"
     template: str = ""
     proxy_url: str = "http://127.0.0.1:18080"
     sandbox_domain: str = "cube.app"
-    sandbox_timeout: int = 3600
+    sandbox_timeout: int = -1
+    registry_dir: str = "~/.jarvis/sandboxes"
+    max_running_sandboxes: int = 3
     allow_internet_access: bool = False
     allow_out: list[str] = field(default_factory=list)
     deny_out: list[str] = field(default_factory=list)
@@ -28,7 +30,11 @@ class ExecutionConfig:
     def validate(self) -> None:
         if self.backend not in ("local", "cubesandbox"):
             raise ValueError("execution.backend must be local or cubesandbox")
-        for name in ("sandbox_timeout", "max_files", "max_file_bytes", "max_total_bytes"):
+        if type(self.sandbox_timeout) is not int or (
+            self.sandbox_timeout != -1 and self.sandbox_timeout <= 0
+        ):
+            raise ValueError("execution.sandbox_timeout must be -1 or a positive integer")
+        for name in ("max_running_sandboxes", "max_files", "max_file_bytes", "max_total_bytes"):
             if type(getattr(self, name)) is not int or getattr(self, name) <= 0:
                 raise ValueError(f"execution.{name} must be a positive integer")
 

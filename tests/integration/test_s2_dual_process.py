@@ -9,7 +9,7 @@ from jarvis.core.transport.socket_client import SocketClient
 
 # 功能：验证 agent.run 命令返回非空 run_id，且 daemon 随即广播 run.started 事件
 # 设计：用 SocketClient 封装 IPC 层，asyncio.Event 等待事件而非轮询，
-#       timeout=5s 防测试挂起；run.started 在 LLM 调用前触发，无需真实 API Key
+#       Windows TLS 客户端初始化可能超过 5 秒，超时设为 15 秒；run.started 在 LLM 调用前触发，无需真实 API Key
 async def test_agent_run_returns_run_id_and_emits_started(
     running_daemon: subprocess.Popen[bytes],
     free_port: int,
@@ -35,7 +35,7 @@ async def test_agent_run_returns_run_id_and_emits_started(
         assert result.get("run_id"), "run_id must be non-empty"
         returned_run_id: str = result["run_id"]
 
-        await asyncio.wait_for(started_event.wait(), timeout=5.0)
+        await asyncio.wait_for(started_event.wait(), timeout=15.0)
         assert received.get("run_id") == returned_run_id
         assert received.get("goal") == "hello"
     finally:
@@ -80,7 +80,7 @@ async def test_two_clients_both_receive_broadcast(
 
         await asyncio.wait_for(
             asyncio.gather(event1.wait(), event2.wait()),
-            timeout=5.0,
+            timeout=15.0,
         )
     finally:
         loop1.cancel()
@@ -116,7 +116,7 @@ async def test_disconnect_and_replay_from_run(
     try:
         await client1.send_command("event.subscribe", {"topics": ["run.*"], "scope": "global"})
         await client1.send_command("agent.run", {"goal": "replay test"})
-        await asyncio.wait_for(started_event.wait(), timeout=5.0)
+        await asyncio.wait_for(started_event.wait(), timeout=15.0)
     finally:
         loop1.cancel()
         await asyncio.gather(loop1, return_exceptions=True)

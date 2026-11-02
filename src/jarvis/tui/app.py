@@ -26,6 +26,7 @@ from jarvis.core.config import JarvisConfig
 from jarvis.core.skills.loader import SkillLoader
 from jarvis.core.transport.socket_client import IpcError, SocketClient
 from jarvis.tui.model_picker import ModelPicker
+from jarvis.tui.sandbox_manager import SandboxManager
 from jarvis.tui.session_picker import SessionPicker
 
 log = logging.getLogger(__name__)
@@ -673,7 +674,7 @@ class ChatTextArea(TextArea):
             if (
                 popup is not None
                 and popup.has_selection()
-                and self.text.strip() not in {"/model", "/resume"}
+                and self.text.strip() not in {"/model", "/resume", "/sandbox"}
             ):
                 popup.select_current()
                 return
@@ -717,6 +718,7 @@ class JarvisTuiApp(App[None]):
     BINDINGS = [
         Binding("ctrl+q", "quit", "quit"),
         Binding("ctrl+x", "cancel_run", "stop task", priority=True),
+        Binding("ctrl+s", "sandbox", "sandboxes", priority=True),
         Binding("ctrl+shift+c", "copy_answer", "copy answer", priority=True),
         Binding("alt+c", "copy_answer", "copy answer", priority=True),
         Binding("alt+tab", "cycle_permission_mode", "permission mode", priority=True),
@@ -725,7 +727,7 @@ class JarvisTuiApp(App[None]):
     CSS = """
     Screen { background: $background; }
     #header {
-        height: 1;
+        height: 2;
         background: $surface;
         color: $text;
         padding: 0 1;
@@ -781,6 +783,8 @@ class JarvisTuiApp(App[None]):
         self._session_id: str | None = None
         self._busy = False
         self._model_alias = "default"
+        self._sandbox_id: str | None = None
+        self._sandbox_state = "待创建"
         self._permission_mode = "ask"
         self._connection_state = "connecting"
         self._last_context_pct: float = 0.0
@@ -806,6 +810,7 @@ class JarvisTuiApp(App[None]):
         items: list[tuple[str, str]] = [
             ("compact", "compress context window"),
             ("model", "打开模型选择菜单；/model 名称 直接切换"),
+            ("sandbox", "管理所有项目的沙箱；当前会话优先显示"),
             ("resume", "选择历史会话；/resume 会话ID 直接恢复"),
         ]
         try:
@@ -890,9 +895,15 @@ class JarvisTuiApp(App[None]):
             return
         try:
             await self._client.send_command("session.cancel", {"session_id": self._session_id})
-            self.notify("任务已停止；CubeSandbox 模式下请新建会话继续。")
+            self.notify("任务已停止；沙箱和文件已保留，可在当前会话继续。")
         except (IpcError, RuntimeError, OSError) as exc:
             self.notify(f"停止任务失败：{exc}", severity="error")
+
+    def action_sandbox(self) -> None:
+        if self._client is not None:
+            self.push_screen(SandboxManager(self._client, self._session_id))
+        else:
+            self.notify("请先连接 Core。", severity="warning")
 
     # 在 ask/auto 间切换当前 session 的权限模式。
     async def action_cycle_permission_mode(self) -> None:
@@ -962,6 +973,17 @@ class JarvisTuiApp(App[None]):
         content = event.value.strip()
         if not content:
             return
+        if content == "/sandbox":
+            if self._client is not None:
+                event.text_area.text = ""
+                try:
+                    await self.query_one(SlashCompleteWidget).remove()
+                except NoMatches:
+                    pass
+                self.action_sandbox()
+            else:
+                self.notify("请先连接 Core。", severity="warning")
+            return
         if content == "/resume" or content.startswith("/resume "):
             if self._client is not None and self._session_id is not None and not self._busy:
                 event.text_area.text = ""
@@ -1003,7 +1025,7 @@ class JarvisTuiApp(App[None]):
         self._busy = True
         prompt = event.text_area
         prompt.text = ""
-        prompt.disabled = True
+        prompt.disabled = False
         prompt.read_only = False
         prompt.border_title = "agent is working..."
         self._append(SelectableStatic(f"[bold]>[/bold] {_esc(content)}", classes="user-turn"))
@@ -1225,6 +1247,7 @@ class JarvisTuiApp(App[None]):
                 f"  [dim]{_esc(self._host)}:{_esc(self._port)}[/dim]"
                 f"{session}  [{color}]{_esc(state)}[/{color}]  permission:{mode_badge}"
                 f"  model:[cyan]{_esc(self._model_alias)}[/cyan]"
+                f"\nsandbox:[dim]{_esc(self._sandbox_id or self._sandbox_state)}[/dim]"
             )
         except Exception:
             # 顶部标题栏渲染失败不该影响会话主流程
@@ -1356,6 +1379,8 @@ class JarvisTuiApp(App[None]):
                 created = await client.send_command("session.create", {"mode": "chat"})
                 self._session_id = str(created["session_id"])
                 self._model_alias = "default"
+                self._sandbox_id = None
+                self._sandbox_state = "待创建"
                 self._session_run_ids.clear()
             return True
         except IpcError as exc:
@@ -1379,6 +1404,8 @@ class JarvisTuiApp(App[None]):
     ) -> None:
         self._session_id = str(restored["session_id"])
         self._model_alias = str(restored.get("model_alias", "default"))
+        self._sandbox_id = restored.get("sandbox_id")
+        self._sandbox_state = "待连接" if self._sandbox_id else "待创建"
         self._session_run_ids = set(restored.get("run_ids", []))
         self._permission_mode = "ask"
         self._last_context_pct = 0.0
@@ -1481,6 +1508,9 @@ class JarvisTuiApp(App[None]):
     # 实际的事件路由逻辑
     def _handle_event_inner(self, event: dict[str, Any]) -> None:
         t = event.get("type", "")
+        if t.startswith("sandbox.") and event.get("project_workspace"):
+            if Path(event["project_workspace"]).resolve() != self._workspace.resolve():
+                return
 
         if t == "llm.token":
             token = event.get("token", "")
@@ -1716,6 +1746,12 @@ class JarvisTuiApp(App[None]):
                         p.focus()
 
         elif t.startswith("sandbox."):
+            if event.get("session_id") == self._session_id:
+                self._sandbox_id = event.get("sandbox_id") or self._sandbox_id
+                if t == "sandbox.destroyed":
+                    self._sandbox_id = None
+                    self._sandbox_state = "已销毁"
+                self._update_header(self._connection_state)
             label = {
                 "sandbox.starting": "正在开启沙箱",
                 "sandbox.created": "沙箱实例已创建，正在导入项目",
@@ -1726,6 +1762,9 @@ class JarvisTuiApp(App[None]):
                 "sandbox.stopping": "正在销毁沙箱",
                 "sandbox.destroyed": "沙箱已销毁",
                 "sandbox.failed": "沙箱操作失败",
+                "sandbox.cancel_requested": "正在停止任务进程，保留沙箱",
+                "sandbox.cancelled": "任务进程已停止，沙箱保留",
+                "sandbox.cancel_failed": "未能确认任务停止，沙箱保留",
             }.get(t, t)
             if t == "sandbox.released" and event.get("reason") == "state_unknown":
                 label = "本次使用结束，实例状态待确认"

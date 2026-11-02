@@ -168,6 +168,7 @@ async def test_runner_uses_selected_model_and_saves_state(tmp_path: Path) -> Non
     provider = MagicMock()
     provider.chat = chat
     config = JarvisConfig(llm=_config(), workspace=tmp_path)
+    config.execution.backend = "local"
     with patch("jarvis.core.runner.create_llm_provider", return_value=provider) as factory:
         outcome = await AgentRunner(config).run_and_capture("hello", session=session, store=store)
     factory.assert_called_once_with(config.llm, "CCCX-Joe")

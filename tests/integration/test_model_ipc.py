@@ -28,7 +28,7 @@ def configurable_model_daemon(
     return running_daemon
 
 
-# 通过真实 TCP 连接发送模型命令并读取结构化响应
+# 通过真实 TCP 连接发送模型命令并读取结构化响应；容纳 Windows TLS 证书初始化开销
 async def _rpc(
     reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
     method: str, params: dict[str, Any],
@@ -37,7 +37,7 @@ async def _rpc(
         "jsonrpc": "2.0", "id": method, "method": method, "params": params,
     }) + "\n").encode())
     await writer.drain()
-    return json.loads(await asyncio.wait_for(reader.readline(), timeout=5))
+    return json.loads(await asyncio.wait_for(reader.readline(), timeout=15))
 
 
 # 功能：验证真实 Core 暴露模型列表、切换及恢复接口，并将未知模型作为结构化错误返回

@@ -50,8 +50,12 @@ def main() -> None:
     sandbox_parser = subparsers.add_parser(
         "sandbox", help="Review and apply sandbox project copies"
     )
-    sandbox_parser.add_argument("sandbox_action", choices=["status", "changes", "apply", "stop"])
-    sandbox_parser.add_argument("--session", required=True, dest="sandbox_session")
+    sandbox_parser.add_argument(
+        "sandbox_action", choices=["list", "status", "changes", "apply", "destroy", "stop"]
+    )
+    sandbox_parser.add_argument("--session", dest="sandbox_session")
+    sandbox_parser.add_argument("--id", dest="sandbox_id")
+    sandbox_parser.add_argument("--discard-changes", action="store_true")
     sandbox_parser.add_argument("--review", dest="review_id")
     sandbox_parser.add_argument("--confirm", help="Confirm the exact review ID to apply")
 
@@ -98,7 +102,15 @@ def main() -> None:
             core_parser.print_help()
             sys.exit(1)
     elif args.command == "sandbox":
-        cmd_sandbox(config, args.sandbox_action, args.sandbox_session, args.review_id, args.confirm)
+        cmd_sandbox(
+            config,
+            args.sandbox_action,
+            args.sandbox_session,
+            args.review_id,
+            args.confirm,
+            sandbox_id=args.sandbox_id,
+            discard_changes=args.discard_changes,
+        )
     elif args.command == "trace":
         config = resolve_runtime_config(config)
         cmd_trace(

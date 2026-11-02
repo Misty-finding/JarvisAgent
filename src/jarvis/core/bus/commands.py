@@ -83,6 +83,7 @@ class SessionResumeResult(BaseModel):
     run_ids: list[str]
     warnings: list[str] = Field(default_factory=list)
     model_alias: str = "default"
+    sandbox_id: str | None = None
 
 
 class ModelListCommand(BaseModel):
@@ -149,14 +150,25 @@ class SessionCancelResult(BaseModel):
 
 class SandboxManageCommand(BaseModel):
     type: Literal["sandbox.manage"] = "sandbox.manage"
-    action: Literal["status", "changes", "apply", "stop"]
-    session_id: str = Field(pattern=r"^sess-[A-Za-z0-9_-]+$")
-    review_id: str | None = None
+    action: Literal["status", "changes", "apply", "destroy", "stop"]
+    session_id: str | None = Field(default=None, pattern=r"^sess-[A-Za-z0-9_-]+$")
+    sandbox_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]+$")
+    discard_changes: bool = False
+    review_id: str | None = Field(default=None, pattern=r"^[0-9a-f]{32}$")
     confirm: str | None = None
 
 
 class SandboxManageResult(BaseModel):
     data: dict[str, Any]
+
+
+class SandboxListCommand(BaseModel):
+    type: Literal["sandbox.list"] = "sandbox.list"
+    current_session_id: str | None = None
+
+
+class SandboxListResult(BaseModel):
+    sandboxes: list[dict[str, Any]]
 
 
 class SessionCloseResult(BaseModel):
@@ -208,6 +220,7 @@ Command = Annotated[
     | SessionCloseCommand
     | SessionCancelCommand
     | SandboxManageCommand
+    | SandboxListCommand
     | PermissionRespondCommand
     | PermissionSetModeCommand
     | SessionCompactCommand

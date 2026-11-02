@@ -215,6 +215,9 @@ SandboxEventType = Literal[
     "sandbox.stopping",
     "sandbox.destroyed",
     "sandbox.failed",
+    "sandbox.cancel_requested",
+    "sandbox.cancelled",
+    "sandbox.cancel_failed",
 ]
 
 
@@ -226,11 +229,12 @@ class SandboxLifecycleEvent(BaseModel):
     session_id: str | None = None
     run_id: str | None = None
     sandbox_id: str | None = None
-    operation: Literal["prepare", "execute", "export", "release", "destroy"]
+    operation: Literal["prepare", "execute", "export", "release", "destroy", "cancel"]
     tool_name: str | None = None
     reason: str | None = None
     elapsed_ms: int = 0
     workspace: Literal["/workspace/project"] = "/workspace/project"
+    project_workspace: str | None = None
     ts: str
 
 

@@ -15,11 +15,14 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 from collections import Counter
 from pathlib import Path
 from typing import Any
 
 ROOT = Path("/workspace/project")
+TASK_UID = 1000
+TASK_GID = 1000
 IGNORED = {
     ".git",
     ".jarvis",
@@ -81,6 +84,11 @@ def execute(action: str, p: dict[str, Any]) -> Any:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(base64.b64decode(item["content"], validate=True))
             path.chmod(0o755 if item.get("executable") else 0o644)
+            for directory in (ROOT, *path.parents):
+                if directory == ROOT.parent:
+                    break
+                getattr(os, "chown")(directory, TASK_UID, TASK_GID)
+            getattr(os, "chown")(path, TASK_UID, TASK_GID)
         return {"imported": len(p["files"])}
     if action == "export":
         if ROOT.is_symlink() or not ROOT.is_dir():
@@ -214,13 +222,102 @@ def execute(action: str, p: dict[str, Any]) -> Any:
     raise ValueError("Unsupported remote operation")
 
 
+def _reply(result: Any = None, *, error: str | None = None) -> None:
+    print(
+        json.dumps(
+            {"ok": False, "error": error} if error else {"ok": True, "result": result},
+            ensure_ascii=True,
+        ),
+        flush=True,
+    )
+
+
+def _supervise(request: dict[str, Any]) -> None:
+    """Privileged control stays outside the task cgroup; project code runs as user."""
+    import ctypes
+    import fcntl
+
+    execution_id = request["execution_id"]
+    if not re.fullmatch(r"[0-9a-f]{32}", execution_id):
+        raise ValueError("Invalid execution identifier")
+    control = Path("/run/jarvis")
+    control.mkdir(mode=0o700, exist_ok=True)
+    control.chmod(0o700)
+    state = control / execution_id
+    group = Path("/sys/fs/cgroup") / ("jarvis-" + execution_id)
+    action = request["action"]
+    with (control / (execution_id + ".lock")).open("a") as lock:
+        getattr(fcntl, "flock")(lock, getattr(fcntl, "LOCK_EX"))
+        if action in ("cancel_execution", "finish_execution"):
+            state.write_text("stopped")
+            if group.exists():
+                for pid in (group / "cgroup.procs").read_text().split():
+                    try:
+                        os.kill(int(pid), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                deadline = time.monotonic() + 1
+                while (group / "cgroup.procs").read_text().strip() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                (group / "cgroup.kill").write_text("1")
+                deadline = time.monotonic() + 3
+                while (group / "cgroup.procs").read_text().strip() and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                if (group / "cgroup.procs").read_text().strip():
+                    raise RuntimeError("Task processes are still running")
+                group.rmdir()
+            _reply({"stopped": True})
+            return
+        if action == "initialize_execution":
+            group.mkdir(exist_ok=True)
+            if not (group / "cgroup.kill").exists():
+                raise RuntimeError("Task cancellation requires cgroup v2 cgroup.kill support")
+            if state.exists() and state.read_text() == "stopped":
+                raise RuntimeError("Execution has already stopped")
+            state.write_text("running")
+            ROOT.mkdir(parents=True, exist_ok=True)
+            getattr(os, "chown")(ROOT, TASK_UID, TASK_GID)
+            _reply({"initialized": True})
+            return
+        if not state.exists() or state.read_text() != "running":
+            raise RuntimeError("Execution is not active")
+        # The lock plus registration pipe closes the start-vs-cancel race. No task
+        # instruction executes before membership is established and privileges dropped.
+        ready_read, ready_write = os.pipe()
+        pid = getattr(os, "fork")()
+        if pid == 0:
+            os.close(ready_read)
+            try:
+                (group / "cgroup.procs").write_text(str(os.getpid()))
+                if ctypes.CDLL(None, use_errno=True).prctl(38, 1, 0, 0, 0) != 0:
+                    raise RuntimeError("Cannot restrict task privileges")
+                if action != "import":
+                    getattr(os, "setgroups")([])
+                    getattr(os, "setgid")(TASK_GID)
+                    getattr(os, "setuid")(TASK_UID)
+                    os.environ.update(HOME="/home/user", USER="user", LOGNAME="user")
+                os.write(ready_write, b"1")
+                os.close(ready_write)
+                _reply(execute(action, request["params"]))
+            except Exception as exc:
+                _reply(error=str(exc))
+            finally:
+                os._exit(0)
+        os.close(ready_write)
+        os.read(ready_read, 1)
+        os.close(ready_read)
+        getattr(fcntl, "flock")(lock, getattr(fcntl, "LOCK_UN"))
+        _pid, status = getattr(os, "waitpid")(pid, 0)
+        if status != 0:
+            _reply(error="Task execution was stopped")
+
+
 def main(encoded: str) -> None:
-    request = json.loads(base64.b64decode(encoded))
     try:
-        result = execute(request["action"], request["params"])
-        print(json.dumps({"ok": True, "result": result}, ensure_ascii=True))
+        request = json.loads(base64.b64decode(encoded))
+        _supervise(request)
     except Exception as exc:
-        print(json.dumps({"ok": False, "error": str(exc)}, ensure_ascii=True))
+        _reply(error=str(exc))
 
 
 if __name__ == "__main__":

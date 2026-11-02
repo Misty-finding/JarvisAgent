@@ -27,6 +27,8 @@ from jarvis.core.bus.commands import (
     PermissionSetModeCommand,
     PermissionSetModeResult,
     PongResult,
+    SandboxListCommand,
+    SandboxListResult,
     SandboxManageCommand,
     SandboxManageResult,
     SessionCancelCommand,
@@ -51,7 +53,14 @@ from jarvis.core.bus.commands import (
 from jarvis.core.bus.envelope import EventPushEnvelope, HandlerError
 from jarvis.core.config import JarvisConfig, get_config
 from jarvis.core.events.bus import EventBus
-from jarvis.core.execution.service import sandbox_command
+from jarvis.core.execution.catalog import SandboxCatalog
+from jarvis.core.execution.cube import CubeBackend
+from jarvis.core.execution.service import (
+    forward_sandbox,
+    list_sandboxes,
+    resolve_sandbox,
+    sandbox_command,
+)
 from jarvis.core.llm.provider import create_llm_provider
 from jarvis.core.logging_setup import setup_logging
 from jarvis.core.mcp.server import McpServerManager
@@ -107,7 +116,9 @@ class CoreApp:
             uptime_ms=int((time.monotonic() - self._start_time) * 1000),
             received_at=datetime.datetime.now(datetime.UTC).isoformat(),
             pid=os.getpid(),
-            workspace=str(Path.cwd().resolve()),
+            workspace=str(
+                self._config.workspace.resolve() if self._config else Path.cwd().resolve()
+            ),
         )
 
     # 将 EventBus 事件写入 trace（作为 EventBus 订阅者）
@@ -188,17 +199,82 @@ class CoreApp:
         assert self._config is not None
         cmd = SandboxManageCommand.model_validate(params)
         try:
-            result = await sandbox_command(
-                self._config,
-                cmd.action,
-                cmd.session_id,
-                review_id=cmd.review_id,
-                confirm=cmd.confirm,
-                bus=self._bus,
+            config, session_id = self._config, cmd.session_id
+            if cmd.sandbox_id:
+                # List first to migrate older local mappings and verify a remote instance exists.
+                instances = await list_sandboxes(config, None)
+                target = next(
+                    (item for item in instances if item["sandbox_id"] == cmd.sandbox_id), None
+                )
+                if target is None:
+                    raise ValueError("沙箱已不存在，请刷新列表。")
+                if not target["managed"]:
+                    if cmd.action not in ("destroy", "stop") or not cmd.discard_changes:
+                        raise ValueError(
+                            "未关联 Jarvis 会话，无法保存变更。仅可显式放弃内容并销毁。"
+                        )
+                    backend = CubeBackend(
+                        config.execution,
+                        config.workspace,
+                        SandboxCatalog(config.execution).root / cmd.sandbox_id,
+                        bus=self._bus,
+                    )
+                    backend._data = {"sandboxID": cmd.sandbox_id}
+                    await backend.destroy(reason="user_discard_unmanaged")
+                    return SandboxManageResult(
+                        data={"destroyed": cmd.sandbox_id, "discarded": True}
+                    )
+                config, mapped_session = resolve_sandbox(config, cmd.sandbox_id)
+                if session_id and session_id != mapped_session:
+                    raise ValueError("Sandbox and session IDs do not match")
+                session_id = mapped_session
+            if not session_id:
+                raise ValueError("Provide a sandbox ID or session ID")
+            foreign = config.workspace.resolve() != self._config.workspace.resolve()
+            if foreign:
+                forwarded = await forward_sandbox(
+                    config, {**params, "session_id": session_id}, bus=self._bus
+                )
+                if forwarded is not None:
+                    return SandboxManageResult.model_validate(forwarded)
+            elif cmd.action in ("destroy", "stop") and self._sessions is not None:
+                if self._sessions.has_active_run(session_id):
+                    try:
+                        await self._sessions.cancel(session_id)
+                    except HandlerError:
+                        if not cmd.discard_changes:
+                            raise
+            foreign_store = (
+                SessionStore(config.workspace / ".jarvis" / "sessions") if foreign else None
             )
+            if foreign_store:
+                self._bus.subscribe(foreign_store.handle_sandbox_event)
+            try:
+                result = await sandbox_command(
+                    config,
+                    cmd.action,
+                    session_id,
+                    review_id=cmd.review_id,
+                    confirm=cmd.confirm,
+                    bus=self._bus,
+                    discard_changes=cmd.discard_changes,
+                )
+            finally:
+                if foreign_store:
+                    self._bus.unsubscribe(foreign_store.handle_sandbox_event)
         except (OSError, RuntimeError, ValueError) as exc:
             raise HandlerError(-32015, str(exc)) from exc
         return SandboxManageResult(data=result)
+
+    async def _sandbox_list_handler(self, params: dict[str, Any]) -> SandboxListResult:
+        assert self._config is not None
+        cmd = SandboxListCommand.model_validate(params)
+        try:
+            return SandboxListResult(
+                sandboxes=await list_sandboxes(self._config, cmd.current_session_id)
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HandlerError(-32015, str(exc)) from exc
 
     # 返回 session 的完整 Anthropic messages 历史
     async def _session_history_handler(self, params: dict[str, Any]) -> SessionGetHistoryResult:
@@ -377,6 +453,7 @@ class CoreApp:
             provider=compact_provider,
             workspace=self._config.workspace,
             llm_config=self._config.llm,
+            execution_backend=self._config.execution.backend,
         )
 
         server = SocketServer(
@@ -394,6 +471,7 @@ class CoreApp:
         server.register("session.send_message", self._session_send_handler)
         server.register("session.cancel", self._session_cancel_handler)
         server.register("sandbox.manage", self._sandbox_manage_handler)
+        server.register("sandbox.list", self._sandbox_list_handler)
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)

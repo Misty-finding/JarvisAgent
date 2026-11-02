@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
@@ -37,6 +38,7 @@ class AgentLoop:
         compactor: Compactor | None = None,
         compact_threshold: float = 0.80,
         session_id: str = "",
+        cancel_requested: Callable[[], bool] | None = None,
     ) -> None:
         self._provider = provider
         self._registry = registry
@@ -45,12 +47,18 @@ class AgentLoop:
         self._compactor = compactor
         self._compact_threshold = compact_threshold
         self._session_id = session_id
+        self._cancel_requested = cancel_requested
+
+    def _check_cancel(self) -> None:
+        if self._cancel_requested is not None and self._cancel_requested():
+            raise asyncio.CancelledError()
 
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, context: ExecutionContext) -> None:
         finalization_turn = False
         base_system = build_runtime_system_prompt(context.max_steps, context.execution_runtime)
         while not context.is_done():
+            self._check_cancel()
             context.step += 1
             await self._bus.publish(
                 StepStartedEvent(run_id=context.run_id, step=context.step, ts=_now())
@@ -61,6 +69,7 @@ class AgentLoop:
                 system = context.system_prompt(base_system)
                 if finalization_turn:
                     system = finalization_system_prompt(system)
+                self._check_cancel()
                 response = await self._provider.chat(
                     messages=context.messages,
                     tool_schemas=[] if finalization_turn else self._registry.tool_schemas(),
@@ -98,6 +107,7 @@ class AgentLoop:
                 )
                 continue
 
+            self._check_cancel()
             if response.text:
                 blocks.append({"type": "text", "text": response.text})
             for tc in response.tool_calls:
@@ -107,6 +117,7 @@ class AgentLoop:
             # [act] execute each requested tool; errors become tool results so loop continues
             if response.stop_reason == "tool_use":
                 for tc in response.tool_calls:
+                    self._check_cancel()
                     result = await invoke_tool(
                         self._registry,
                         tc,

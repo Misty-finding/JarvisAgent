@@ -81,6 +81,7 @@ def _runner(
     max_steps: int = 10,
 ) -> AgentRunner:
     config = JarvisConfig()
+    config.execution.backend = "local"
     config.agent.max_steps = max_steps
     return AgentRunner(
         config,

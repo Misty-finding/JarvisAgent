@@ -50,15 +50,19 @@ class SessionManager:
         provider: LLMProvider | None = None,
         workspace: Path | None = None,
         llm_config: LlmConfig | None = None,
+        execution_backend: str = "local",
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
         self._provider = provider
         self._llm_config = llm_config
+        self._execution_backend = execution_backend
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._run_tasks: dict[str, asyncio.Task[Any]] = {}
+        self._cancel_locks: dict[str, asyncio.Lock] = {}
+        self._runners: dict[str, AgentRunner] = {}
         self._skill_loader = SkillLoader(workspace)
         self._workspace = workspace.resolve() if workspace is not None else None
 
@@ -75,6 +79,7 @@ class SessionManager:
             updated_at=ts,
             run_ids=[],
             workspace=str(self._workspace) if self._workspace is not None else "",
+            execution_backend=self._execution_backend,
         )
         self._sessions[sid] = session
         self._locks[sid] = asyncio.Lock()
@@ -166,6 +171,7 @@ class SessionManager:
                 run_ids=session.run_ids,
                 warnings=warnings,
                 model_alias=session.model_alias,
+                sandbox_id=session.sandbox_id,
             )
 
     # 处理用户消息，追加 thread 并启动一次 agent run
@@ -230,6 +236,7 @@ class SessionManager:
                         )
 
                 runner = self._runner_factory()
+                self._runners[sid] = runner
                 outcome = await runner.run_and_capture(
                     goal,
                     run_id=run_id,
@@ -247,6 +254,7 @@ class SessionManager:
                 raise
             finally:
                 self._run_tasks.pop(sid, None)
+                self._runners.pop(sid, None)
                 session.active_run_id = None
                 session.updated_at = _now()
                 session.status = "closed" if session.mode == "one_shot" else "waiting_for_input"
@@ -268,12 +276,32 @@ class SessionManager:
     async def cancel(self, sid: str) -> bool:
         """Cancel a session run and wait until its backend has terminated execution."""
         self._get_session(sid)
+        async with self._cancel_locks.setdefault(sid, asyncio.Lock()):
+            task = self._run_tasks.get(sid)
+            if task is None or task.done():
+                return False
+            runner = self._runners.get(sid)
+            stopping = None
+            if runner is not None:
+                runner.request_cancel()
+                stopping = asyncio.create_task(runner.stop_execution())
+            task.cancel()
+            results = await asyncio.gather(
+                task, *([stopping] if stopping is not None else []), return_exceptions=True
+            )
+            if stopping is not None and isinstance(results[-1], Exception):
+                raise HandlerError(
+                    -32016, "Task stop could not be confirmed; sandbox was retained."
+                )
+            if self._get_session(sid).last_run_state == "failed":
+                raise HandlerError(
+                    -32016, "Task stop could not be confirmed; sandbox was retained."
+                )
+            return True
+
+    def has_active_run(self, sid: str) -> bool:
         task = self._run_tasks.get(sid)
-        if task is None or task.done():
-            return False
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        return True
+        return task is not None and not task.done()
 
     # 关闭指定 session 并更新 meta.json
     async def close(self, sid: str) -> None:

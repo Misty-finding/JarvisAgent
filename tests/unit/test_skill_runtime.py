@@ -65,6 +65,7 @@ class _SkillProvider:
 async def test_skill_activation_through_session_and_runner(tmp_path: Path, automatic: bool) -> None:
     root = _skill(tmp_path)
     cfg = JarvisConfig(workspace=tmp_path)
+    cfg.execution.backend = "local"
     cfg.agent.max_steps = 5
     provider = _SkillProvider(root, automatic)
     bus = EventBus()

@@ -127,6 +127,7 @@ async def test_sandbox_session_cannot_switch_to_local(tmp_path: Path) -> None:
         execution_backend="cubesandbox",
     )
     config = JarvisConfig(workspace=tmp_path)
+    config.execution.backend = "local"
     outcome = await AgentRunner(
         config, provider=CountingModel(), runs_dir=tmp_path / "runs"
     ).run_and_capture(

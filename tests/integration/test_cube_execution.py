@@ -16,7 +16,6 @@ import pytest
 
 from jarvis.core.config import JarvisConfig
 from jarvis.core.events.bus import EventBus
-from jarvis.core.execution.base import ExecutionUnavailable
 from jarvis.core.execution.cube import CubeBackend
 from jarvis.core.execution.service import sandbox_command
 from jarvis.core.execution.settings import ExecutionConfig
@@ -36,6 +35,7 @@ def cube_config(tmp_path: Path) -> JarvisConfig:
     config = JarvisConfig(workspace=tmp_path)
     config.execution = ExecutionConfig(
         backend="cubesandbox",
+        registry_dir=str(tmp_path / ".jarvis" / "registry"),
         connection_file=os.getenv(
             "JARVIS_TEST_CUBE_CONNECTION", "D:/CubeSandbox/client/connection.env"
         ),
@@ -187,17 +187,26 @@ async def test_real_network_and_cancellation(cube_config: JarvisConfig) -> None:
         )
         result = await backend.invoke("bash", {"command": probe})
         assert "blocked" in result.content
-        task = asyncio.create_task(backend.invoke("bash", {"command": "sleep 100"}))
+        task = asyncio.create_task(backend.invoke("bash", {
+            "command": "setsid sh -c 'sleep 8; touch should-not-exist' >/dev/null 2>&1 & touch keep; sleep 100"
+        }))
         await asyncio.sleep(2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+        await backend.cancel_run()
         state = json.loads((backend.state_dir / "sandbox.json").read_text())
-        assert state["invalidated"]
+        assert not state["invalidated"] and not state["active_execution_id"]
         listing = await backend._control("GET", "/sandboxes")
-        assert backend.sandbox_id not in {item["sandboxID"] for item in listing}
-        with pytest.raises(ExecutionUnavailable):
-            await CubeBackend(config.execution, config.workspace, backend.state_dir).prepare()
+        assert backend.sandbox_id in {item["sandboxID"] for item in listing}
+        resumed = CubeBackend(config.execution, config.workspace, backend.state_dir)
+        await resumed.prepare()
+        assert resumed.sandbox_id == backend.sandbox_id
+        check = await resumed.invoke("bash", {
+            "command": "sleep 8; test -e keep && test ! -e should-not-exist && test $(id -u) = 1000"
+        })
+        assert not check.is_error, check.content
+        await resumed.release()
     finally:
         listing = await backend._control("GET", "/sandboxes")
         if backend.sandbox_id in {item["sandboxID"] for item in listing}:
@@ -227,6 +236,7 @@ async def test_real_session_cancel_terminates_remote_command(cube_config: Jarvis
             while not session.sandbox_id:
                 await asyncio.sleep(0.1)
             backend._data = json.loads((backend.state_dir / "sandbox.json").read_text())["sandbox"]
+            backend._execution_id = json.loads((backend.state_dir / "sandbox.json").read_text())["active_execution_id"]
             while True:
                 started = await backend.invoke("read_file", {"path": "started"})
                 if not started.is_error:
@@ -236,12 +246,18 @@ async def test_real_session_cancel_terminates_remote_command(cube_config: Jarvis
         assert session.last_run_state == "interrupted"
         assert session.active_run_id is None
         listing = await backend._control("GET", "/sandboxes")
-        assert session.sandbox_id not in {item["sandboxID"] for item in listing}
+        assert session.sandbox_id in {item["sandboxID"] for item in listing}
         assert not (config.workspace / "started").exists()
+        resumed = CubeBackend(config.execution, config.workspace, backend.state_dir)
+        await resumed.prepare()
+        assert not (await resumed.invoke("read_file", {"path": "started"})).is_error
+        await resumed.release()
     finally:
         if not task.done():
             task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+        if backend.sandbox_id:
+            await backend.destroy(reason="verification_cleanup")
 
 
 async def test_real_lifecycle_reaches_bus_thread_trace_and_ipc(
@@ -293,6 +309,7 @@ async def test_real_lifecycle_reaches_bus_thread_trace_and_ipc(
     server.register("event.subscribe", app._subscribe_handler)
     server.register("session.create", app._session_create_handler)
     server.register("session.send_message", app._session_send_handler)
+    server.register("session.cancel", app._session_cancel_handler)
     server.register("sandbox.manage", app._sandbox_manage_handler)
     await server.start()
     client = SocketClient("127.0.0.1", free_port)
@@ -309,6 +326,15 @@ async def test_real_lifecycle_reaches_bus_thread_trace_and_ipc(
         await client.send_command("session.send_message", {"session_id": sid, "content": "read"})
         provider.calls = iter([("read_file", {"path": "calc.py"})])
         await client.send_command("session.send_message", {"session_id": sid, "content": "reuse"})
+        provider.calls = iter([("bash", {"command": "touch cancelled; sleep 100"})])
+        running = asyncio.create_task(client.send_command("session.send_message", {
+            "session_id": sid, "content": "cancel without destruction",
+        }))
+        async with asyncio.timeout(30):
+            while not any(e.get("tool_name") == "bash" for e in bus_events):
+                await asyncio.sleep(0.05)
+        await client.send_command("session.cancel", {"session_id": sid})
+        await asyncio.gather(running, return_exceptions=True)
         # Exercise the actual CLI IPC client: a different connection triggers the stop,
         # while the original subscriber receives the lifecycle broadcast.
         await _request("127.0.0.1", free_port, "stop", sid, None, None)
@@ -323,6 +349,14 @@ async def test_real_lifecycle_reaches_bus_thread_trace_and_ipc(
             "sandbox.created",
             "sandbox.ready",
             "sandbox.using",
+            "sandbox.released",
+            "sandbox.reused",
+            "sandbox.using",
+            "sandbox.released",
+            "sandbox.reused",
+            "sandbox.using",
+            "sandbox.cancel_requested",
+            "sandbox.cancelled",
             "sandbox.released",
             "sandbox.reused",
             "sandbox.using",

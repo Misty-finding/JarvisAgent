@@ -690,6 +690,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `run_ids` | `array` | yes |
 | `warnings` | `array` | no |
 | `model_alias` | `string` | no |
+| `sandbox_id` | `string | null` | no |
 
 ```json
 {
@@ -737,6 +738,18 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       "default": "default",
       "title": "Model Alias",
       "type": "string"
+    },
+    "sandbox_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sandbox Id"
     }
   },
   "required": [
@@ -1030,13 +1043,73 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 }
 ```
 
+### SandboxListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `current_session_id` | `string | null` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "sandbox.list",
+      "default": "sandbox.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "current_session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Current Session Id"
+    }
+  },
+  "title": "SandboxListCommand",
+  "type": "object"
+}
+```
+### SandboxListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `sandboxes` | `array` | yes |
+
+```json
+{
+  "properties": {
+    "sandboxes": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Sandboxes",
+      "type": "array"
+    }
+  },
+  "required": [
+    "sandboxes"
+  ],
+  "title": "SandboxListResult",
+  "type": "object"
+}
+```
 ### SandboxManageCommand
 
 | Field | Type | Required |
 |---|---|---|
 | `type` | `string` | no |
 | `action` | `string` | yes |
-| `session_id` | `string` | yes |
+| `session_id` | `string | null` | no |
+| `sandbox_id` | `string | null` | no |
+| `discard_changes` | `boolean` | no |
 | `review_id` | `string | null` | no |
 | `confirm` | `string | null` | no |
 
@@ -1054,19 +1127,47 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
         "status",
         "changes",
         "apply",
+        "destroy",
         "stop"
       ],
       "title": "Action",
       "type": "string"
     },
     "session_id": {
-      "pattern": "^sess-[A-Za-z0-9_-]+$",
-      "title": "Session Id",
-      "type": "string"
+      "anyOf": [
+        {
+          "pattern": "^sess-[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "sandbox_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9_-]+$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sandbox Id"
+    },
+    "discard_changes": {
+      "default": false,
+      "title": "Discard Changes",
+      "type": "boolean"
     },
     "review_id": {
       "anyOf": [
         {
+          "pattern": "^[0-9a-f]{32}$",
           "type": "string"
         },
         {
@@ -1090,8 +1191,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
     }
   },
   "required": [
-    "action",
-    "session_id"
+    "action"
   ],
   "title": "SandboxManageCommand",
   "type": "object"
@@ -2264,6 +2364,7 @@ Subscribe to `sandbox.*` for creation, reuse, execution and destruction. Each ev
 | `reason` | `string | null` | no |
 | `elapsed_ms` | `integer` | no |
 | `workspace` | `string` | no |
+| `project_workspace` | `string | null` | no |
 | `ts` | `string` | yes |
 
 ```json
@@ -2280,7 +2381,10 @@ Subscribe to `sandbox.*` for creation, reuse, execution and destruction. Each ev
         "sandbox.released",
         "sandbox.stopping",
         "sandbox.destroyed",
-        "sandbox.failed"
+        "sandbox.failed",
+        "sandbox.cancel_requested",
+        "sandbox.cancelled",
+        "sandbox.cancel_failed"
       ],
       "title": "Type",
       "type": "string"
@@ -2333,7 +2437,8 @@ Subscribe to `sandbox.*` for creation, reuse, execution and destruction. Each ev
         "execute",
         "export",
         "release",
-        "destroy"
+        "destroy",
+        "cancel"
       ],
       "title": "Operation",
       "type": "string"
@@ -2372,6 +2477,18 @@ Subscribe to `sandbox.*` for creation, reuse, execution and destruction. Each ev
       "default": "/workspace/project",
       "title": "Workspace",
       "type": "string"
+    },
+    "project_workspace": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Project Workspace"
     },
     "ts": {
       "title": "Ts",

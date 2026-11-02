@@ -256,7 +256,7 @@ async def test_tool_detail_is_selectable_after_result() -> None:
 # 功能：验证提交用户输入时会追加 user turn，并进入 busy 状态
 # 设计：用 fake client 替代 SocketClient，直接调用 on_chat_text_area_submitted，
 #       覆盖 TextArea 清空内容 + 设置 busy 占位符的核心状态迁移
-async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
+async def test_input_submit_keeps_prompt_available_for_management_commands() -> None:
     class _FakeArea:
         def __init__(self) -> None:
             self.disabled = False
@@ -284,7 +284,7 @@ async def test_input_submit_appends_user_turn_and_disables_prompt() -> None:
     await app.on_chat_text_area_submitted(event)  # type: ignore[arg-type]
 
     assert app._busy  # type: ignore[attr-defined]
-    assert area.disabled
+    assert not area.disabled
     assert area.text == ""
     assert "agent is working" in area.border_title.lower()
     assert appended[0].content == "[bold]>[/bold] hello"

@@ -83,6 +83,15 @@ class AgentRunner:
         self._mcp_manager = mcp_manager
         # 跨 run 共享的后台 subagent 任务注册表
         self._task_registry = BackgroundTaskRegistry()
+        self._active_backend: CubeBackend | None = None
+        self._cancel_requested = False
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+
+    async def stop_execution(self) -> None:
+        if self._active_backend is not None:
+            await self._active_backend.cancel_run()
 
     # 构建工具注册表，注入 TaskManager（任务工具共享同一实例）；可选注入 SpawnAgentTool
     def _build_registry(
@@ -272,6 +281,7 @@ class AgentRunner:
                             session_id=session.id if session else None,
                             run_id=run_id,
                         )
+                        self._active_backend = backend
                         await backend.prepare()
                     except (OSError, ValueError) as exc:
                         raise ExecutionUnavailable(
@@ -284,6 +294,8 @@ class AgentRunner:
                         session.execution_backend = "cubesandbox"
                         session.sandbox_id = backend.sandbox_id
                         store.write_meta(session)
+                if self._cancel_requested:
+                    raise asyncio.CancelledError()
                 if session is not None and session.model_alias != "default":
                     provider = self._provider or create_llm_provider(
                         self._config.llm,
@@ -329,16 +341,24 @@ class AgentRunner:
                     compactor=compactor,
                     compact_threshold=self._config.compaction.auto_threshold,
                     session_id=session_id_str,
+                    cancel_requested=lambda: self._cancel_requested,
                 )
                 await loop.run(context)
+                if self._cancel_requested:
+                    raise asyncio.CancelledError()
             except asyncio.CancelledError:
                 cancelled = True
                 if not context.is_done():
                     context.mark_failed("cancelled")
                 if backend is not None:
-                    await asyncio.shield(
-                        asyncio.gather(backend.destroy(reason="cancelled"), return_exceptions=True)
-                    )
+                    try:
+                        await asyncio.shield(backend.cancel_run())
+                    except ExecutionUnavailable:
+                        cancelled = False
+                        context.result = (
+                            "Task cancellation could not be confirmed. Sandbox retained."
+                        )
+                        context.mark_failed("cancel_failed")
             except ExecutionUnavailable as exc:
                 context.result = str(exc)
                 context.mark_failed("execution_unavailable")
@@ -369,9 +389,13 @@ class AgentRunner:
                 except SessionPersistenceError:
                     context.mark_failed("storage_error")
                     logging.getLogger(__name__).exception("sandbox lifecycle could not be saved")
+                except ExecutionUnavailable as exc:
+                    context.result = str(exc)
+                    context.mark_failed("execution_unavailable")
                 finally:
                     if lease is not None:
                         lease.__exit__(None, None, None)
+                    self._active_backend = None
 
             await bus.publish(
                 RunFinishedEvent(

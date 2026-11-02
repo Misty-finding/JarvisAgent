@@ -266,6 +266,7 @@ api_key_env = "CCCX_JOE_API_KEY"
 
 ```text
 /model                 # 打开模型菜单：↑↓ 选择、Enter 确认、Esc 取消
+/sandbox               # 所有沙箱及对应会话；当前会话优先，提供显式销毁按钮
 /model CCCX-Joe        # 切换当前会话到 gpt-6.1-sol
 /model default         # 切回默认模型，例如 DeepSeek
 ```
@@ -768,3 +769,5 @@ uv run pytest tests/unit -q
 ## License
 
 本项目使用仓库中的 [LICENSE](LICENSE)。
+
+沙箱默认按会话永久保留；Ctrl+X 只停止任务。全局配置、销毁前保存和恢复行为见 [沙箱管理](docs/sandbox-management.md)。

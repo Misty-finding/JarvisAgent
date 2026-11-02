@@ -224,6 +224,7 @@ async def _runner_session(
     store.append_note(session.id, "persistent note", "old")
     provider = _ToolProvider(store, session.id, compact)
     config = JarvisConfig(workspace=tmp_path)
+    config.execution.backend = "local"
     config.compaction.auto_threshold = 0.8
     runner = AgentRunner(config, provider=provider)  # type: ignore[arg-type]
     return runner, store, session, provider
