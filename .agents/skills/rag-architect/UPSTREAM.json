@@ -1,0 +1,7 @@
+{
+  "repository": "https://github.com/Jeffallan/claude-skills",
+  "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+  "path": "skills/rag-architect",
+  "license": "MIT",
+  "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution."
+}

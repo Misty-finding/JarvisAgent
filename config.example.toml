@@ -8,6 +8,28 @@ default_model = "deepseek-flash"
 base_url = "https://api.deepseek.com/anthropic"
 router = "static"
 
+# 在 TUI 中输入 /model 打开选择菜单；default 指上面的默认模型。
+[llm.models.CCCX-Joe]
+provider = "openai"
+model = "gpt-6.1-sol"
+display_name = "6.1 Sol"
+base_url = "https://hk.testvideo.site/v1"
+reasoning_effort = "xhigh"
+store = false
+api_key_env = "CCCX_JOE_API_KEY"
+# 若使用这套 Codex 中转账号，可显式引用已有认证文件，避免复制密钥。
+# api_key_file = "~/.codex/auth.json"
+# context_window 仅用于上下文占用估算，请根据中转服务实际限制设置。
+# context_window = 200000
+
+# 每个 [llm.models.别名] 对应菜单的一项，可继续添加中转实际支持的模型。
+# [llm.models.gpt-6-astra]
+# provider = "openai"
+# model = "gpt-6-astra"
+# display_name = "6 Astra"
+# base_url = "https://hk.testvideo.site/v1"
+# api_key_env = "CCCX_JOE_API_KEY"
+
 [agent]
 max_steps = 60
 
@@ -28,3 +50,16 @@ timeout_s = 60
 auto_threshold = 0.0
 tool_result_limit = 8000
 tool_result_keep = 4000
+[execution]
+# local preserves existing behavior; cubesandbox routes every project tool remotely.
+backend = "local"
+# Core reads this file; it is never copied into the task workspace.
+connection_file = "D:/CubeSandbox/client/connection.env"
+sandbox_timeout = 3600
+allow_internet_access = false
+allow_out = []
+deny_out = []
+# Only these worktree changes/untracked files are imported; others use Git HEAD.
+include_uncommitted = []
+# Additional project paths to omit; built-in secret/runtime exclusions always apply.
+exclude = []

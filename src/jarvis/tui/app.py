@@ -25,6 +25,7 @@ from textual.widgets import Label, Static, TextArea
 from jarvis.core.config import JarvisConfig
 from jarvis.core.skills.loader import SkillLoader
 from jarvis.core.transport.socket_client import IpcError, SocketClient
+from jarvis.tui.model_picker import ModelPicker
 from jarvis.tui.session_picker import SessionPicker
 
 log = logging.getLogger(__name__)
@@ -116,6 +117,7 @@ def _read_windows_clipboard() -> str | None:
             kernel32.GlobalUnlock(data_handle)
         user32.CloseClipboard()
 
+
 def _params_str(params: dict[str, Any]) -> str:
     try:
         return json.dumps(params, ensure_ascii=False, indent=2)
@@ -189,7 +191,7 @@ class LLMStreamBlock(Static):
 
     # 追加一个 token 并刷新显示。必须保持 markup=False + 纯字符串更新：
     # 模型输出里的 [bold]、[/dim]、反引号一旦被当成 markup 解析就会抛 MarkupError
-    #（历史崩溃现场见 ~/.jarvis/logs/tui.log 的 llm.token 报错）。
+    # （历史崩溃现场见 ~/.jarvis/logs/tui.log 的 llm.token 报错）。
     def append_token(self, token: str) -> None:
         if self._finalized:
             return
@@ -365,16 +367,20 @@ class PermissionSelect(Static):
     """
 
     _CHOICES: tuple[tuple[str, str, str], ...] = (
-        ("allow_once",   "Allow once",   "y / 1"),
+        ("allow_once", "Allow once", "y / 1"),
         ("always_allow", "Always allow", "a / 2"),
-        ("deny_once",    "Deny",         "n / 3"),
-        ("always_deny",  "Always deny",  "d / 4"),
+        ("deny_once", "Deny", "n / 3"),
+        ("always_deny", "Always deny", "d / 4"),
     )
     _KEY_MAP: dict[str, str] = {
-        "y": "allow_once",  "1": "allow_once",
-        "a": "always_allow","2": "always_allow",
-        "n": "deny_once",   "3": "deny_once",
-        "d": "always_deny", "4": "always_deny",
+        "y": "allow_once",
+        "1": "allow_once",
+        "a": "always_allow",
+        "2": "always_allow",
+        "n": "deny_once",
+        "3": "deny_once",
+        "d": "always_deny",
+        "4": "always_deny",
     }
 
     # 用户作出权限决策时发布，携带工具 ID 和决策字符串
@@ -465,11 +471,11 @@ class PermissionBlock(SelectableStatic):
     """日志里的权限审批摘要"""
 
     _LABEL_MAP: dict[str, str] = {
-        "allow_once":   "allowed (once)",
+        "allow_once": "allowed (once)",
         "always_allow": "always allowed",
-        "deny_once":    "denied",
-        "always_deny":  "always denied",
-        "timeout":      "⏱ timed out",
+        "deny_once": "denied",
+        "always_deny": "always denied",
+        "timeout": "⏱ timed out",
     }
     LABEL_MAP = _LABEL_MAP
 
@@ -508,9 +514,7 @@ class PermissionBlock(SelectableStatic):
         preview = f"  [dim]{_esc(self._param_preview)}[/dim]" if self._param_preview else ""
         name = _esc(self._tool_name)
         try:
-            self.update(
-                f"{icon} permission  [bold]{name}[/bold]{preview}  [dim]{label}[/dim]"
-            )
+            self.update(f"{icon} permission  [bold]{name}[/bold]{preview}  [dim]{label}[/dim]")
         except Exception:
             log.exception("PermissionBlock._resolve render failed tool=%s", self._tool_name)
             self.update(f"permission  {name}  {label}")
@@ -584,7 +588,9 @@ class SlashCompleteWidget(Static):
             self.update("[dim]  no matching commands[/dim]")
             return
         lines: list[str] = []
-        for i, (name, desc) in enumerate(self._filtered):
+        start = max(0, min(self._cursor - 3, len(self._filtered) - 8))
+        for i in range(start, min(start + 8, len(self._filtered))):
+            name, desc = self._filtered[i]
             # skill 名称与描述来自仓库文件，可能含 [xxx]/反引号，必须转义后再拼进 markup
             name_part = _esc(name)
             desc_part = f"  [dim]{_esc(desc)}[/dim]" if desc else ""
@@ -592,7 +598,10 @@ class SlashCompleteWidget(Static):
                 lines.append(f"  [bold cyan]❯ /{name_part}[/bold cyan]{desc_part}")
             else:
                 lines.append(f"    [cyan]/{name_part}[/cyan]{desc_part}")
-        lines.append("[dim]  ↑↓ navigate   tab/enter select   esc dismiss[/dim]")
+        lines.append(
+            f"[dim]  {self._cursor + 1}/{len(self._filtered)}  "
+            "↑↓ navigate   tab/enter select   esc dismiss[/dim]"
+        )
         self.update("\n".join(lines))
 
 
@@ -661,7 +670,11 @@ class ChatTextArea(TextArea):
         if key == "enter":
             event.stop()
             event.prevent_default()
-            if popup is not None and popup.has_selection():
+            if (
+                popup is not None
+                and popup.has_selection()
+                and self.text.strip() not in {"/model", "/resume"}
+            ):
                 popup.select_current()
                 return
             if self.text.strip():
@@ -703,6 +716,7 @@ class JarvisTuiApp(App[None]):
     TITLE = "Jarvis"
     BINDINGS = [
         Binding("ctrl+q", "quit", "quit"),
+        Binding("ctrl+x", "cancel_run", "stop task", priority=True),
         Binding("ctrl+shift+c", "copy_answer", "copy answer", priority=True),
         Binding("alt+c", "copy_answer", "copy answer", priority=True),
         Binding("alt+tab", "cycle_permission_mode", "permission mode", priority=True),
@@ -766,6 +780,7 @@ class JarvisTuiApp(App[None]):
         self._pending_permission_blocks: dict[str, PermissionBlock] = {}
         self._session_id: str | None = None
         self._busy = False
+        self._model_alias = "default"
         self._permission_mode = "ask"
         self._connection_state = "connecting"
         self._last_context_pct: float = 0.0
@@ -788,7 +803,11 @@ class JarvisTuiApp(App[None]):
 
     # 构建斜杠命令候选列表：内建命令 + 所有已注册 skill
     def _build_slash_items(self) -> list[tuple[str, str]]:
-        items: list[tuple[str, str]] = [("compact", "compress context window")]
+        items: list[tuple[str, str]] = [
+            ("compact", "compress context window"),
+            ("model", "打开模型选择菜单；/model 名称 直接切换"),
+            ("resume", "选择历史会话；/resume 会话ID 直接恢复"),
+        ]
         try:
             loader = SkillLoader(self._workspace)
             for skill in loader.list_all_skills():
@@ -813,6 +832,7 @@ class JarvisTuiApp(App[None]):
             popup = self.query_one(SlashCompleteWidget)
             popup.set_query(query)
         except NoMatches:
+            self._slash_items = self._build_slash_items()
             popup = SlashCompleteWidget(self._slash_items)
             self.mount(popup, before="#prompt")
             popup.set_query(query)
@@ -865,6 +885,15 @@ class JarvisTuiApp(App[None]):
                 self._append(SelectableStatic("[yellow]warning: failed to close session[/yellow]"))
         self.exit()
 
+    async def action_cancel_run(self) -> None:
+        if self._client is None or self._session_id is None or not self._busy:
+            return
+        try:
+            await self._client.send_command("session.cancel", {"session_id": self._session_id})
+            self.notify("任务已停止；CubeSandbox 模式下请新建会话继续。")
+        except (IpcError, RuntimeError, OSError) as exc:
+            self.notify(f"停止任务失败：{exc}", severity="error")
+
     # 在 ask/auto 间切换当前 session 的权限模式。
     async def action_cycle_permission_mode(self) -> None:
         self._permission_mode = "auto" if self._permission_mode == "ask" else "ask"
@@ -879,10 +908,12 @@ class JarvisTuiApp(App[None]):
                 {"session_id": self._session_id, "mode": self._permission_mode},
             )
         except (IpcError, RuntimeError, OSError) as exc:
-            self._append(SelectableStatic(
-                f"[yellow]permission mode sync failed: {_esc(exc)}[/yellow]",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[yellow]permission mode sync failed: {_esc(exc)}[/yellow]",
+                    classes="log-line",
+                )
+            )
 
     # 优先复制鼠标选区；无选区时复制当前聚焦或最近一条模型回答。
     def action_copy_answer(self) -> None:
@@ -931,6 +962,30 @@ class JarvisTuiApp(App[None]):
         content = event.value.strip()
         if not content:
             return
+        if content == "/resume" or content.startswith("/resume "):
+            if self._client is not None and self._session_id is not None and not self._busy:
+                event.text_area.text = ""
+                try:
+                    await self.query_one(SlashCompleteWidget).remove()
+                except NoMatches:
+                    pass
+                self._busy = True
+                self.run_worker(self._do_resume(content[7:].strip()), name="resume")
+            else:
+                self.notify("请等待当前任务完成并连接 Core 后恢复会话。", severity="warning")
+            return
+        if content == "/model" or content.startswith("/model "):
+            if self._client is not None and self._session_id is not None and not self._busy:
+                event.text_area.text = ""
+                try:
+                    await self.query_one(SlashCompleteWidget).remove()
+                except NoMatches:
+                    pass
+                self._busy = True
+                self.run_worker(self._do_model(content[6:].strip()), name="model", exclusive=False)
+            else:
+                self.notify("请等待当前任务完成并连接 Core 后切换模型。", severity="warning")
+            return
         # 检测 /compact 指令
         if content == "/compact":
             event.text_area.text = ""
@@ -955,6 +1010,84 @@ class JarvisTuiApp(App[None]):
         self._update_header("running")
         self.run_worker(self._do_send_message(content), name="send_message", exclusive=False)
 
+    # 聊天中恢复历史；取消或失败时保留当前会话，不把命令发送给模型。
+    async def _do_resume(self, session_id: str) -> None:
+        prompt = self._prompt()
+        try:
+            if self._client is None or self._session_id is None:
+                return
+            client, original_session = self._client, self._session_id
+            if prompt is not None:
+                prompt.disabled = True
+            selected: str | None = session_id
+            if not selected:
+                listing = await client.send_command("session.list", {})
+                selected = await self.push_screen_wait(
+                    SessionPicker(listing.get("sessions", []), listing.get("warnings", []))
+                )
+                if selected is None:
+                    return
+            if self._client is not client or self._session_id != original_session:
+                self.notify("连接已变化，请重新恢复会话。", severity="warning")
+                return
+            self._opening_session = True
+            if selected:
+                restored = await client.send_command("session.resume", {"session_id": selected})
+            else:
+                restored = await client.send_command("session.create", {"mode": "chat"})
+            await self._show_restored_session(restored, new_session=not selected)
+            self._resume_session_id = self._session_id
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(
+                SelectableStatic(f"[red]无法恢复会话：{_esc(exc)}[/red]", classes="log-line")
+            )
+        finally:
+            self._opening_session = False
+            self._busy = False
+            self._update_header(self._connection_state)
+            if prompt is not None and self._client is not None and self._session_id is not None:
+                prompt.disabled = False
+                prompt.read_only = False
+                prompt.focus()
+
+    # 打开模型选择菜单或按名称直接切换，取消时保留原模型
+    async def _do_model(self, name: str) -> None:
+        try:
+            if self._client is None or self._session_id is None:
+                return
+            client, session_id = self._client, self._session_id
+            if not name:
+                result = await self._client.send_command(
+                    "model.list",
+                    {"session_id": session_id},
+                )
+                self._model_alias = str(result["selected"])
+                selection = await self.push_screen_wait(
+                    ModelPicker(
+                        result["models"],
+                        self._model_alias,
+                    )
+                )
+                if selection is None or selection == self._model_alias:
+                    return
+                name = selection
+            if self._client is not client or self._session_id != session_id:
+                self.notify("连接已变化，请重新打开模型菜单。", severity="warning")
+                return
+            result = await client.send_command(
+                "session.set_model",
+                {"session_id": session_id, "name": name},
+            )
+            self._model_alias = str(result["name"])
+            self._last_context_pct = 0.0
+            text = f"[cyan]已选择 {_esc(result['model'])}[/cyan]"
+            self._append(SelectableStatic(text, classes="log-line"))
+        except (IpcError, RuntimeError, OSError) as exc:
+            self._append(SelectableStatic(f"[red]模型配置：{_esc(exc)}[/red]", classes="log-line"))
+        finally:
+            self._busy = False
+            self._update_header(self._connection_state)
+
     # 在 worker 中执行手动压缩命令，完成后显示结果横幅
     async def _do_compact(self) -> None:
         if self._client is None or self._session_id is None:
@@ -968,16 +1101,21 @@ class JarvisTuiApp(App[None]):
             summary_tokens = result.get("summary_tokens", 0)
             saved_tokens = result.get("saved_tokens", 0)
             self._last_context_pct = 0.0
-            self._append(SelectableStatic(
-                f"[bold cyan]⚡ Context compacted[/bold cyan]"
-                f"  [dim]summary={_esc(summary_tokens)} tokens"
-                f"  saved≈{_esc(saved_tokens)} tokens[/dim]",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[bold cyan]⚡ Context compacted[/bold cyan]"
+                    f"  [dim]summary={_esc(summary_tokens)} tokens"
+                    f"  saved≈{_esc(saved_tokens)} tokens[/dim]",
+                    classes="log-line",
+                )
+            )
         except (IpcError, RuntimeError, OSError) as e:
-            self._append(SelectableStatic(
-                f"[red]compact error: {_esc(e)}[/red]", classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[red]compact error: {_esc(e)}[/red]",
+                    classes="log-line",
+                )
+            )
 
     # 在 worker 中执行 IPC 发送，使 App 消息泵在 agent 运行期间仍能处理键盘/焦点等消息
     async def _do_send_message(self, content: str) -> None:
@@ -1086,6 +1224,7 @@ class JarvisTuiApp(App[None]):
                 f"[bold]Jarvis[/bold]  [cyan]{_esc(self._workspace.name)}[/cyan]"
                 f"  [dim]{_esc(self._host)}:{_esc(self._port)}[/dim]"
                 f"{session}  [{color}]{_esc(state)}[/{color}]  permission:{mode_badge}"
+                f"  model:[cyan]{_esc(self._model_alias)}[/cyan]"
             )
         except Exception:
             # 顶部标题栏渲染失败不该影响会话主流程
@@ -1119,9 +1258,11 @@ class JarvisTuiApp(App[None]):
 
             try:
                 loop_task.add_done_callback(
-                    lambda t: log.error("loop_task failed: %s", t.exception())
-                    if not t.cancelled() and t.exception() is not None
-                    else None
+                    lambda t: (
+                        log.error("loop_task failed: %s", t.exception())
+                        if not t.cancelled() and t.exception() is not None
+                        else None
+                    )
                 )
                 self._opening_session = True
                 if not await self._open_session(client):
@@ -1140,6 +1281,7 @@ class JarvisTuiApp(App[None]):
                         "context.*",
                         "subagent.*",
                         "skill.*",
+                        "sandbox.*",
                     ],
                     "scope": "global",
                 }
@@ -1163,9 +1305,7 @@ class JarvisTuiApp(App[None]):
                 await loop_task
             except IpcError as e:
                 try:
-                    header.update(
-                        f"[bold]Jarvis[/bold]  [red]subscribe error: {_esc(e)}[/red]"
-                    )
+                    header.update(f"[bold]Jarvis[/bold]  [red]subscribe error: {_esc(e)}[/red]")
                 except Exception:
                     log.exception("header render failed")
             finally:
@@ -1192,9 +1332,9 @@ class JarvisTuiApp(App[None]):
         try:
             while selected == "":
                 listing = await client.send_command("session.list", {})
-                selected = await self.push_screen_wait(SessionPicker(
-                    listing.get("sessions", []), listing.get("warnings", [])
-                ))
+                selected = await self.push_screen_wait(
+                    SessionPicker(listing.get("sessions", []), listing.get("warnings", []))
+                )
                 if selected is None:
                     self.exit()
                     return False
@@ -1215,22 +1355,33 @@ class JarvisTuiApp(App[None]):
             else:
                 created = await client.send_command("session.create", {"mode": "chat"})
                 self._session_id = str(created["session_id"])
+                self._model_alias = "default"
                 self._session_run_ids.clear()
             return True
         except IpcError as exc:
-            self._append(SelectableStatic(
-                f"[red]无法打开会话：{_esc(exc)}[/red]\n"
-                "[dim]若 Core 尚未更新，请先运行 jarvis core stop 后重新启动。Ctrl+Q 退出。[/dim]",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[red]无法打开会话：{_esc(exc)}[/red]\n"
+                    "[dim]若 Core 尚未更新，请先运行 jarvis core stop 后重新启动。"
+                    "Ctrl+Q 退出。[/dim]",
+                    classes="log-line",
+                )
+            )
             self._update_header("resume failed")
             return False
 
     # 清理旧界面并渲染恢复快照，不向实时事件处理器回放审批或运行事件
-    async def _show_restored_session(self, restored: dict[str, Any]) -> None:
+    async def _show_restored_session(
+        self,
+        restored: dict[str, Any],
+        *,
+        new_session: bool = False,
+    ) -> None:
         self._session_id = str(restored["session_id"])
+        self._model_alias = str(restored.get("model_alias", "default"))
         self._session_run_ids = set(restored.get("run_ids", []))
         self._permission_mode = "ask"
+        self._last_context_pct = 0.0
         self._busy = False
         self._pending_tool_blocks.clear()
         self._pending_permission_blocks.clear()
@@ -1239,16 +1390,23 @@ class JarvisTuiApp(App[None]):
         self._subagent_run_ids.clear()
         self._subagent_start_times.clear()
         await self.query_one("#log-view", VerticalScroll).remove_children()
-        self._append(SelectableStatic(
-            f"[cyan]已恢复会话[/cyan]  {_esc(self._session_id)}  "
-            f"{_esc(restored.get('title', ''))}", classes="run-header",
-        ))
+        label = "已新建会话" if new_session else "已恢复会话"
+        self._append(
+            SelectableStatic(
+                f"[cyan]{label}[/cyan]  {_esc(self._session_id)}  "
+                f"{_esc(restored.get('title', ''))}",
+                classes="run-header",
+            )
+        )
         self._render_history(restored.get("messages", []))
         for warning in restored.get("warnings", []):
             self._append(SelectableStatic(f"[yellow]{_esc(warning)}[/yellow]", classes="log-line"))
-        self._append(SelectableStatic(
-            "[dim]历史已加载。请输入下一条消息继续。[/dim]", classes="log-line"
-        ))
+        if not new_session:
+            self._append(
+                SelectableStatic(
+                    "[dim]历史已加载。请输入下一条消息继续。[/dim]", classes="log-line"
+                )
+            )
 
     # 将保存的消息渲染为只读对话与工具块，不创建挂起审批或触发工具执行
     def _render_history(self, messages: list[dict[str, Any]]) -> None:
@@ -1267,9 +1425,9 @@ class JarvisTuiApp(App[None]):
                         self._last_llm_block = answer
                         self._append(answer)
                     else:
-                        self._append(SelectableStatic(
-                            f"[bold]你[/bold]  {_esc(text)}", classes="user-turn"
-                        ))
+                        self._append(
+                            SelectableStatic(f"[bold]你[/bold]  {_esc(text)}", classes="user-turn")
+                        )
                 elif role == "assistant" and block.get("type") == "tool_use":
                     params: Any = block.get("input", {})
                     tool = ToolCallBlock(
@@ -1358,20 +1516,24 @@ class JarvisTuiApp(App[None]):
         elif t == "run.started":
             run_id = _esc(event.get("run_id", ""))
             goal = _esc(_preview(str(event.get("goal", "")), 96))
-            self._append(SelectableStatic(
-                f"[dim]run[/dim]  [cyan]{run_id}[/cyan]  [dim]{goal}[/dim]",
-                classes="run-header",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[dim]run[/dim]  [cyan]{run_id}[/cyan]  [dim]{goal}[/dim]",
+                    classes="run-header",
+                )
+            )
 
         elif t == "skill.invoked":
             skill_name = _esc(event.get("skill_name", ""))
             arguments = str(event.get("arguments", ""))
             args_preview = _esc(_preview(arguments, 80)) if arguments else ""
             args_part = f"  [dim]{args_preview}[/dim]" if args_preview else ""
-            self._append(SelectableStatic(
-                f"[bold cyan]/{skill_name}[/bold cyan]{args_part}",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[bold cyan]/{skill_name}[/bold cyan]{args_part}",
+                    classes="log-line",
+                )
+            )
 
         elif t == "subagent.started":
             run_id = event.get("run_id", "")
@@ -1380,10 +1542,12 @@ class JarvisTuiApp(App[None]):
             self._subagent_start_times[run_id] = time.monotonic()
             short_id = run_id[:8] if len(run_id) >= 8 else run_id
             desc_preview = _esc(_preview(description, 72))
-            self._append(SelectableStatic(
-                f"[dim]┌─[/dim] [cyan]{desc_preview}[/cyan]  [dim]{_esc(short_id)}[/dim]",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[dim]┌─[/dim] [cyan]{desc_preview}[/cyan]  [dim]{_esc(short_id)}[/dim]",
+                    classes="log-line",
+                )
+            )
 
         elif t == "subagent.finished":
             run_id = event.get("run_id", "")
@@ -1393,25 +1557,31 @@ class JarvisTuiApp(App[None]):
             elapsed = f"  [dim]{time.monotonic() - start:.1f}s[/dim]" if start is not None else ""
             desc_part = f"[cyan]{_esc(_preview(description, 72))}[/cyan]{elapsed}"
             if status == "success":
-                self._append(SelectableStatic(
-                    f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
-                    classes="log-line",
-                ))
+                self._append(
+                    SelectableStatic(
+                        f"[dim]└─[/dim] [bold green]✓[/bold green] {desc_part}",
+                        classes="log-line",
+                    )
+                )
             else:
-                self._append(SelectableStatic(
-                    f"[dim]└─[/dim] [bold red]✗[/bold red] {desc_part}",
-                    classes="log-line",
-                ))
+                self._append(
+                    SelectableStatic(
+                        f"[dim]└─[/dim] [bold red]✗[/bold red] {desc_part}",
+                        classes="log-line",
+                    )
+                )
 
         elif t == "step.started":
             run_id = event.get("run_id", "")
             if run_id in self._subagent_run_ids:
                 return
             step = _esc(event.get("step", ""))
-            self._append(SelectableStatic(
-                f"[dim]step {step}[/dim]",
-                classes="step-divider",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[dim]step {step}[/dim]",
+                    classes="step-divider",
+                )
+            )
 
         elif t == "tool.call_started":
             tool_use_id = str(event.get("tool_use_id", ""))
@@ -1445,16 +1615,20 @@ class JarvisTuiApp(App[None]):
             steps = event.get("steps", 0)
             reason = event.get("reason") or ""
             if status == "success":
-                self._append(SelectableStatic(
-                    f"[bold green]✓ completed[/bold green]  [dim]{_esc(steps)} steps[/dim]",
-                    classes="run-ok",
-                ))
+                self._append(
+                    SelectableStatic(
+                        f"[bold green]✓ completed[/bold green]  [dim]{_esc(steps)} steps[/dim]",
+                        classes="run-ok",
+                    )
+                )
             else:
                 detail = f"  [dim]{_esc(reason)}[/dim]" if reason else ""
-                self._append(SelectableStatic(
-                    f"[bold red]✗ failed[/bold red]{detail}  [dim]{_esc(steps)} steps[/dim]",
-                    classes="run-err",
-                ))
+                self._append(
+                    SelectableStatic(
+                        f"[bold red]✗ failed[/bold red]{detail}  [dim]{_esc(steps)} steps[/dim]",
+                        classes="run-err",
+                    )
+                )
 
         elif t == "llm.usage":
             run_id = event.get("run_id", "")
@@ -1463,24 +1637,28 @@ class JarvisTuiApp(App[None]):
             pct = float(event.get("context_pct") or 0.0)
             self._last_context_pct = pct
             ctx_bar = self._render_ctx_bar(pct)
-            self._append(SelectableStatic(
-                f"[dim]  tokens  "
-                f"in={_esc(event.get('input_tokens'))} "
-                f"out={_esc(event.get('output_tokens'))} "
-                f"cache={_esc(event.get('cache_read_input_tokens'))}[/dim]"
-                f"  {ctx_bar}",
-                classes="usage",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[dim]  tokens  "
+                    f"in={_esc(event.get('input_tokens'))} "
+                    f"out={_esc(event.get('output_tokens'))} "
+                    f"cache={_esc(event.get('cache_read_input_tokens'))}[/dim]"
+                    f"  {ctx_bar}",
+                    classes="usage",
+                )
+            )
 
         elif t == "context.compacted":
             orig = event.get("original_tokens", 0)
             summary = event.get("summary_tokens", 0)
             self._last_context_pct = 0.0
-            self._append(SelectableStatic(
-                f"[bold cyan]⚡ Context compacted[/bold cyan]"
-                f"  [dim]original≈{_esc(orig)} tokens → summary={_esc(summary)} tokens[/dim]",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[bold cyan]⚡ Context compacted[/bold cyan]"
+                    f"  [dim]original≈{_esc(orig)} tokens → summary={_esc(summary)} tokens[/dim]",
+                    classes="log-line",
+                )
+            )
 
         elif t == "permission.requested":
             if self._permission_mode == "auto":
@@ -1498,7 +1676,9 @@ class JarvisTuiApp(App[None]):
                 _focused_repr = "?"
             log.info(
                 "permission.requested tool=%s id=%s  app.focused=%s",
-                tool_name, tool_use_id, _focused_repr,
+                tool_name,
+                tool_use_id,
+                _focused_repr,
             )
             perm_block = PermissionBlock(tool_use_id, tool_name, param_preview)
             self._pending_permission_blocks[tool_use_id] = perm_block
@@ -1535,15 +1715,39 @@ class JarvisTuiApp(App[None]):
                         p.border_title = "type a message — enter to send, ⌘/⇧/⌥+enter for newline"
                         p.focus()
 
+        elif t.startswith("sandbox."):
+            label = {
+                "sandbox.starting": "正在开启沙箱",
+                "sandbox.created": "沙箱实例已创建，正在导入项目",
+                "sandbox.ready": "沙箱已就绪",
+                "sandbox.reused": "已复用当前会话沙箱",
+                "sandbox.using": "使用沙箱",
+                "sandbox.released": "本次使用结束，实例保留",
+                "sandbox.stopping": "正在销毁沙箱",
+                "sandbox.destroyed": "沙箱已销毁",
+                "sandbox.failed": "沙箱操作失败",
+            }.get(t, t)
+            if t == "sandbox.released" and event.get("reason") == "state_unknown":
+                label = "本次使用结束，实例状态待确认"
+            detail = event.get("tool_name") or event.get("sandbox_id") or ""
+            color = "red" if t == "sandbox.failed" else "dim"
+            self._append(
+                SelectableStatic(
+                    f"[{color}]{_esc(label)}  {_esc(detail)}[/{color}]", classes="log-line"
+                )
+            )
+
         elif t == "log.line":
             # 日志正文常包含异常堆栈/路径/括号，必须整体转义后再拼进 markup
             level = _esc(event.get("level", "INFO"))
             color = "bold red" if level == "ERROR" else ("yellow" if level == "WARNING" else "dim")
-            self._append(SelectableStatic(
-                f"[{color}]{level}[/{color}]  "
-                f"[dim]{_esc(event.get('source', ''))}[/dim]  {_esc(event.get('message', ''))}",
-                classes="log-line",
-            ))
+            self._append(
+                SelectableStatic(
+                    f"[{color}]{level}[/{color}]  "
+                    f"[dim]{_esc(event.get('source', ''))}[/dim]  {_esc(event.get('message', ''))}",
+                    classes="log-line",
+                )
+            )
 
 
 # TUI 入口：读取配置并启动 JarvisTuiApp

@@ -20,11 +20,17 @@ from jarvis.core.bus.commands import (
     AgentRunResult,
     EventSubscribeCommand,
     EventSubscribeResult,
+    ModelListCommand,
+    ModelListResult,
     PermissionRespondCommand,
     PermissionRespondResult,
     PermissionSetModeCommand,
     PermissionSetModeResult,
     PongResult,
+    SandboxManageCommand,
+    SandboxManageResult,
+    SessionCancelCommand,
+    SessionCancelResult,
     SessionCloseCommand,
     SessionCloseResult,
     SessionCompactCommand,
@@ -39,10 +45,13 @@ from jarvis.core.bus.commands import (
     SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
+    SessionSetModelCommand,
+    SessionSetModelResult,
 )
-from jarvis.core.bus.envelope import EventPushEnvelope
+from jarvis.core.bus.envelope import EventPushEnvelope, HandlerError
 from jarvis.core.config import JarvisConfig, get_config
 from jarvis.core.events.bus import EventBus
+from jarvis.core.execution.service import sandbox_command
 from jarvis.core.llm.provider import create_llm_provider
 from jarvis.core.logging_setup import setup_logging
 from jarvis.core.mcp.server import McpServerManager
@@ -155,8 +164,41 @@ class CoreApp:
     async def _session_send_handler(self, params: dict[str, Any]) -> SessionSendMessageResult:
         assert self._sessions is not None
         cmd = SessionSendMessageCommand.model_validate(params)
-        run_id = await self._sessions.send_message(cmd.session_id, cmd.content)
-        return SessionSendMessageResult(run_id=run_id)
+        task = asyncio.current_task()
+        if task is not None:
+            self._running_runs.add(task)
+        try:
+            run_id = await self._sessions.send_message(cmd.session_id, cmd.content)
+            return SessionSendMessageResult(run_id=run_id)
+        except asyncio.CancelledError as exc:
+            raise HandlerError(-32014, "Task cancelled; execution stopped.") from exc
+        finally:
+            if task is not None:
+                self._running_runs.discard(task)
+
+    async def _session_cancel_handler(self, params: dict[str, Any]) -> SessionCancelResult:
+        assert self._sessions is not None
+        cmd = SessionCancelCommand.model_validate(params)
+        cancelled = await self._sessions.cancel(cmd.session_id)
+        if self._permission_manager is not None:
+            self._permission_manager.cancel_session(cmd.session_id, reason="cancelled")
+        return SessionCancelResult(cancelled=cancelled)
+
+    async def _sandbox_manage_handler(self, params: dict[str, Any]) -> SandboxManageResult:
+        assert self._config is not None
+        cmd = SandboxManageCommand.model_validate(params)
+        try:
+            result = await sandbox_command(
+                self._config,
+                cmd.action,
+                cmd.session_id,
+                review_id=cmd.review_id,
+                confirm=cmd.confirm,
+                bus=self._bus,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise HandlerError(-32015, str(exc)) from exc
+        return SandboxManageResult(data=result)
 
     # 返回 session 的完整 Anthropic messages 历史
     async def _session_history_handler(self, params: dict[str, Any]) -> SessionGetHistoryResult:
@@ -165,12 +207,36 @@ class CoreApp:
         messages = await self._sessions.get_history(cmd.session_id)
         return SessionGetHistoryResult(messages=messages)
 
+    # 重新读取命名模型配置，保留默认模型和正在运行任务已创建的客户端
+    def _refresh_model_profiles(self) -> None:
+        assert self._config is not None
+        try:
+            models = get_config().llm.models
+        except (OSError, SystemExit) as exc:
+            raise HandlerError(-32602, f"无法重新加载模型配置：{exc}") from exc
+        self._config.llm.models = models
+
+    # 返回最新模型配置及当前选择，避免复用旧 Core 时菜单缺少新增模型
+    async def _model_list_handler(self, params: dict[str, Any]) -> ModelListResult:
+        assert self._sessions is not None
+        cmd = ModelListCommand.model_validate(params)
+        self._refresh_model_profiles()
+        return self._sessions.list_models(cmd.session_id)  # type: ignore[no-any-return]
+
+    # 切换当前会话后续使用的模型，不影响其他会话
+    async def _session_model_handler(self, params: dict[str, Any]) -> SessionSetModelResult:
+        assert self._sessions is not None
+        cmd = SessionSetModelCommand.model_validate(params)
+        self._refresh_model_profiles()
+        return await self._sessions.set_model(cmd.session_id, cmd.name)  # type: ignore[no-any-return]
+
     # 接收客户端权限审批响应，resolve 对应挂起的 Future
     async def _permission_respond_handler(self, params: dict[str, Any]) -> PermissionRespondResult:
         cmd = PermissionRespondCommand.model_validate(params)
         logger.info(
             "permission.respond received tool_use_id=%s decision=%s",
-            cmd.tool_use_id, cmd.decision,
+            cmd.tool_use_id,
+            cmd.decision,
         )
         if self._permission_manager is None:
             logger.error("permission.respond: PermissionManager not initialized")
@@ -179,9 +245,7 @@ class CoreApp:
         return PermissionRespondResult()
 
     # 设置 session 级权限模式；auto 会同时放行该 session 已挂起的审批。
-    async def _permission_set_mode_handler(
-        self, params: dict[str, Any]
-    ) -> PermissionSetModeResult:
+    async def _permission_set_mode_handler(self, params: dict[str, Any]) -> PermissionSetModeResult:
         cmd = PermissionSetModeCommand.model_validate(params)
         if self._permission_manager is None:
             logger.error("permission.set_mode: PermissionManager not initialized")
@@ -212,9 +276,7 @@ class CoreApp:
 
         replayed_count = 0
         if cmd.replay_from_run is not None:
-            replayed_count = await self._replay_events(
-                cmd.replay_from_run, writer, cmd.topics
-            )
+            replayed_count = await self._replay_events(cmd.replay_from_run, writer, cmd.topics)
 
         assert self._broadcaster is not None
         sub_id = self._broadcaster.subscribe(writer, cmd.topics, cmd.scope)
@@ -290,13 +352,17 @@ class CoreApp:
         self._bus.subscribe(self._broadcaster.handle)
         sessions_root = self._config.workspace / ".jarvis" / "sessions"
         store = SessionStore(sessions_root)
+        self._bus.subscribe(store.handle_sandbox_event)
         assert self._config is not None
         compact_provider = create_llm_provider(self._config.llm)
 
         self._mcp_manager = McpServerManager()
         if self._config.mcp.servers:
             logger.info("mcp: starting %d server(s)", len(self._config.mcp.servers))
-            await self._mcp_manager.start_all(self._config.mcp.servers)
+            await self._mcp_manager.start_all(
+                self._config.mcp.servers,
+                isolated=self._config.execution.backend == "cubesandbox",
+            )
 
         self._sessions = SessionManager(
             store,
@@ -310,6 +376,7 @@ class CoreApp:
             bus=self._bus,
             provider=compact_provider,
             workspace=self._config.workspace,
+            llm_config=self._config.llm,
         )
 
         server = SocketServer(
@@ -325,11 +392,15 @@ class CoreApp:
         server.register("session.list", self._session_list_handler)
         server.register("session.resume", self._session_resume_handler)
         server.register("session.send_message", self._session_send_handler)
+        server.register("session.cancel", self._session_cancel_handler)
+        server.register("sandbox.manage", self._sandbox_manage_handler)
         server.register("session.get_history", self._session_history_handler)
         server.register("session.close", self._session_close_handler)
         server.register("permission.respond", self._permission_respond_handler)
         server.register("permission.set_mode", self._permission_set_mode_handler)
         server.register("session.compact", self._session_compact_handler)
+        server.register("model.list", self._model_list_handler)
+        server.register("session.set_model", self._session_model_handler)
 
         addr = await server.start()
         logger.info("jarvis-core %s listening addr=%s", jarvis.__version__, addr)

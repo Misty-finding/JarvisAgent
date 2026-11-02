@@ -14,13 +14,14 @@ from jarvis.core.bus.events import LlmTokenEvent
 from jarvis.core.config import JarvisConfig
 from jarvis.core.events.bus import EventBus
 from jarvis.core.llm.types import LlmResponse
+from jarvis.core.permissions.manager import PermissionManager
 from jarvis.core.runner import AgentRunner
 from jarvis.core.session.manager import SessionManager
 from jarvis.core.session.store import SessionStore
 from jarvis.core.transport.ipc_broadcaster import IpcEventBroadcaster
 from jarvis.core.transport.socket_server import SocketServer
 from jarvis.tui.app import ChatTextArea, JarvisTuiApp, LLMStreamBlock, SelectableStatic
-from jarvis.tui.session_picker import SessionPicker
+from jarvis.tui.session_picker import SessionItem, SessionPicker
 
 
 class _OfflineProvider:
@@ -55,6 +56,7 @@ async def resume_core(
 
     core = CoreApp()
     core._config = JarvisConfig(workspace=tmp_path)
+    core._permission_manager = PermissionManager()
     core._broadcaster = IpcEventBroadcaster()
     core._bus.subscribe(core._broadcaster.handle)
     provider = _OfflineProvider()
@@ -136,3 +138,75 @@ async def test_missing_resume_tui_does_not_create_session(
         assert len(store.list_sessions()[0]) == 1
         assert any("无法打开会话" in str(widget.render()) for widget in app.query(SelectableStatic))
         factory.assert_not_called()
+
+
+# 聊天内恢复必须由 TUI 处理，不能把 /resume 发给模型。
+@pytest.mark.parametrize("picker", [False, True])
+async def test_slash_resume_over_ipc_then_continue(
+    resume_core: tuple[int, str, Mock, _OfflineProvider, SessionStore], picker: bool,
+) -> None:
+    port, sid, factory, provider, store = resume_core
+    app = JarvisTuiApp("127.0.0.1", port)
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(pilot, lambda: app._session_id is not None and not app._opening_session)
+        original = app._session_id
+        prompt = app.query_one(ChatTextArea)
+        await _until(pilot, lambda: not prompt.disabled)
+        prompt.text = "/resume" if picker else f"/resume {sid}"
+        prompt.focus()
+        await pilot.press("enter")
+        if picker:
+            await _until(pilot, lambda: isinstance(app.screen, SessionPicker) or factory.called)
+            assert isinstance(app.screen, SessionPicker)
+            for item in app.screen.query(SessionItem):
+                if item.session_id == sid:
+                    await pilot.click(item)
+                    break
+        await _until(pilot, lambda: (app._session_id == sid and not app._busy) or factory.called)
+        factory.assert_not_called()
+        assert app._session_id == sid and sid != original
+        assert app._permission_mode == "ask"
+        assert app.query_one(LLMStreamBlock)._text == "old answer"
+        await _until(pilot, lambda: not prompt.disabled and prompt.has_focus)
+        assert len(store.list_sessions()[0]) == 2
+        prompt.text = "continue"
+        await pilot.press("enter")
+        await _until(pilot, lambda: factory.call_count == 1 and not app._busy)
+        assert provider.messages[0]["content"] == "old goal"
+        assert provider.messages[-1]["content"] == "continue"
+
+
+# 取消选择和恢复失败都应保留当前会话、输入和连接。
+@pytest.mark.parametrize("action", ["missing", "cancel", "new"])
+async def test_slash_resume_cancel_or_missing_keeps_current_chat(
+    resume_core: tuple[int, str, Mock, _OfflineProvider, SessionStore], action: str,
+) -> None:
+    port, _, factory, _, store = resume_core
+    app = JarvisTuiApp("127.0.0.1", port)
+    async with app.run_test(size=(110, 40)) as pilot:
+        await _until(pilot, lambda: app._session_id is not None and not app._opening_session)
+        original = app._session_id
+        prompt = app.query_one(ChatTextArea)
+        await _until(pilot, lambda: not prompt.disabled)
+        prompt.text = "/resume sess-missing" if action == "missing" else "/resume"
+        prompt.focus()
+        await pilot.press("enter")
+        if action != "missing":
+            await _until(pilot, lambda: isinstance(app.screen, SessionPicker) or factory.called)
+            assert isinstance(app.screen, SessionPicker)
+            if action == "new":
+                await pilot.click("#new-session")
+            else:
+                await pilot.press("escape")
+        await _until(pilot, lambda: not app._busy)
+        factory.assert_not_called()
+        if action == "new":
+            assert app._session_id != original
+            assert not app.query(LLMStreamBlock)
+            assert app._model_alias == "default" and app._permission_mode == "ask"
+        else:
+            assert app._session_id == original
+        assert app._connection_state == "ready"
+        await _until(pilot, lambda: not prompt.disabled and prompt.has_focus)
+        assert not app._opening_session
+        assert len(store.list_sessions()[0]) == (3 if action == "new" else 2)

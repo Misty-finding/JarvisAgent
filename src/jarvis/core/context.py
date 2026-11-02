@@ -19,6 +19,7 @@ class ExecutionContext:
     status: str = "running"  # "running" | "success" | "failed"
     reason: str | None = None
     result: str = ""
+    execution_runtime: str = ""
     # skill 或 subagent 角色可覆盖默认 system prompt
     system_prompt_override: str | None = None
     message_sink: Callable[[dict[str, Any]], None] | None = field(default=None, repr=False)
@@ -38,8 +39,7 @@ class ExecutionContext:
         parts = [base]
         if self.system_prompt_override:
             parts.append(
-                "\n\n## Task-specific Role Instructions\n"
-                + self.system_prompt_override.strip()
+                "\n\n## Task-specific Role Instructions\n" + self.system_prompt_override.strip()
             )
         if self.global_context.strip():
             parts.append("\n\n## Global Context\n" + self.global_context.strip())
@@ -61,9 +61,7 @@ class ExecutionContext:
         self.messages.append(message)
 
     # 将工具调用结果追加为 user 消息；同一步的多个结果共享同一条消息
-    def add_tool_result(
-        self, tool_use_id: str, content: str, is_error: bool = False
-    ) -> None:
+    def add_tool_result(self, tool_use_id: str, content: str, is_error: bool = False) -> None:
         block: dict[str, Any] = {
             "type": "tool_result",
             "tool_use_id": tool_use_id,

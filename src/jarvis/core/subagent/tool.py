@@ -12,6 +12,7 @@ from jarvis.core.bus.events import SubagentFinishedEvent, SubagentStartedEvent
 from jarvis.core.context import ExecutionContext
 from jarvis.core.events.bus import EventBus
 from jarvis.core.events.writer import EventWriter
+from jarvis.core.execution.base import BackendTool, ExecutionBackend
 from jarvis.core.loop import AgentLoop
 from jarvis.core.runs import new_run_id
 from jarvis.core.subagent.registry import BackgroundTaskRegistry
@@ -31,6 +32,7 @@ from jarvis.core.tools.registry import ToolRegistry
 if TYPE_CHECKING:
     from jarvis.core.llm.base import LLMProvider
     from jarvis.core.permissions.manager import PermissionManager
+
 
 def _now() -> str:
     return datetime.now(UTC).isoformat()
@@ -93,8 +95,10 @@ class SpawnAgentTool(BaseTool):
         session_id: str,
         depth: int = 0,
         workspace: Path | None = None,
+        backend: ExecutionBackend | None = None,
     ) -> None:
         self._provider = provider
+        self._backend = backend
         self._parent_bus = parent_bus
         self._parent_run_id = parent_run_id
         self._permission_manager = permission_manager
@@ -127,6 +131,7 @@ class SpawnAgentTool(BaseTool):
             goal=p.prompt,
             max_steps=self._max_steps,
             system_prompt_override=profile.system_prompt if profile else None,
+            execution_runtime=self._backend.runtime_description if self._backend else "",
         )
 
         child_bus = EventBus()
@@ -195,7 +200,11 @@ class SpawnAgentTool(BaseTool):
                 or f"Subagent failed (status={child_context.status}, reason={child_context.reason})"
             ),
             is_error=True,
-            error_type="runtime_error",
+            error_type=(
+                "execution_unavailable"
+                if child_context.reason == "execution_unavailable"
+                else "runtime_error"
+            ),
         )
 
     # 后台任务协程：写事件文件，运行 loop，发布完成事件
@@ -226,6 +235,8 @@ class SpawnAgentTool(BaseTool):
         child_run_id: str,
         profile: AgentProfile | None,
     ) -> ToolRegistry:
+        from jarvis.core.skills.loader import SkillLoader
+        from jarvis.core.skills.tool import ActivateSkillTool
         from jarvis.core.task.manager import TaskManager
 
         allowed: set[str] | None = (
@@ -246,7 +257,19 @@ class SpawnAgentTool(BaseTool):
         ]
         for t in _all_tools:
             if _allowed(t.name):
-                registry.register(t)
+                registry.register(
+                    BackendTool(t, self._backend, run_id=child_run_id) if self._backend else t
+                )
+
+        if _allowed("activate_skill"):
+            skill_tool = ActivateSkillTool(
+                SkillLoader(self._workspace),
+                child_bus,
+                child_run_id,
+                self._session_id,
+            )
+            if skill_tool.available:
+                registry.register(skill_tool)
 
         child_task_manager = TaskManager(self._runs_dir / child_run_id / ".tasks")
         for t in [
@@ -270,6 +293,7 @@ class SpawnAgentTool(BaseTool):
                 session_id=self._session_id,
                 depth=self._depth + 1,
                 workspace=self._workspace,
+                backend=self._backend,
             )
             if _allowed("spawn_agent"):
                 registry.register(nested)
@@ -329,5 +353,11 @@ class AgentResultTool(BaseTool):
                 content=f"Subagent raised an exception: {exc}",
                 is_error=True,
                 error_type="runtime_error",
+            )
+        if context.reason == "execution_unavailable":
+            return ToolResult(
+                content=context.result or "Sandbox unavailable",
+                is_error=True,
+                error_type="execution_unavailable",
             )
         return ToolResult(content=context.result or "Subagent completed with no text result.")

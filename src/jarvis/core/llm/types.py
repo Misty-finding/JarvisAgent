@@ -27,3 +27,5 @@ class LlmResponse:
     usage: UsageStats | None = None
     # thinking blocks from extended thinking — must be preserved verbatim in conversation history
     thinking_blocks: list[dict[str, object]] = field(default_factory=list)
+    # 保存服务端返回的协议状态，支持无服务端存储的多轮推理和工具续接
+    provider_blocks: list[dict[str, object]] = field(default_factory=list)

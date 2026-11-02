@@ -8,12 +8,18 @@ import sys
 from pathlib import Path
 
 from jarvis.core.bus.commands import (
+    SandboxManageCommand,
+    SandboxManageResult,
     AgentRunCommand,
     AgentRunResult,
     EventSubscribeCommand,
     EventSubscribeResult,
+    ModelListCommand,
+    ModelListResult,
     PingCommand,
     PongResult,
+    SessionCancelCommand,
+    SessionCancelResult,
     SessionCloseCommand,
     SessionCloseResult,
     SessionCreateCommand,
@@ -26,9 +32,12 @@ from jarvis.core.bus.commands import (
     SessionResumeResult,
     SessionSendMessageCommand,
     SessionSendMessageResult,
+    SessionSetModelCommand,
+    SessionSetModelResult,
 )
 from jarvis.core.bus.envelope import EventPushEnvelope
 from jarvis.core.bus.events import (
+    SandboxLifecycleEvent,
     CoreStartedEvent,
     LlmModelSelectedEvent,
     LlmTokenEvent,
@@ -197,9 +206,25 @@ def generate() -> str:
         "\n",
         _model_section("SessionResumeResult", SessionResumeResult),
         "\n",
+        _model_section("ModelListCommand", ModelListCommand),
+        "\n",
+        _model_section("ModelListResult", ModelListResult),
+        "\n",
+        _model_section("SessionSetModelCommand", SessionSetModelCommand),
+        "\n",
+        _model_section("SessionSetModelResult", SessionSetModelResult),
+        "\n",
         _model_section("SessionCloseCommand", SessionCloseCommand),
         "\n",
         _model_section("SessionCloseResult", SessionCloseResult),
+        "\n",
+        _model_section("SessionCancelCommand", SessionCancelCommand),
+        "\n",
+        _model_section("SessionCancelResult", SessionCancelResult),
+        "\n",
+        _model_section("SandboxManageCommand", SandboxManageCommand),
+        "\n",
+        _model_section("SandboxManageResult", SandboxManageResult),
         "\n## Server Push\n\n",
         "Events pushed from daemon to subscribed clients over the same TCP connection.\n\n",
         _model_section("EventPushEnvelope", EventPushEnvelope, event_push_example),
@@ -267,6 +292,12 @@ def generate() -> str:
             {"type": "session.closed", "session_id": session_id, "ts": ts}),
         "\n",
         _model_section("SkillInvokedEvent", SkillInvokedEvent),
+        "\n## Sandbox Lifecycle Events\n\n",
+        "Subscribe to `sandbox.*` for creation, reuse, execution and destruction. "
+        "Each event is also journaled in `thread.jsonl` as `kind=event`; "
+        "these audit records are excluded from model messages. "
+        "`sandbox.released` retains the instance; only `sandbox.destroyed` confirms deletion.\n\n",
+        _model_section("SandboxLifecycleEvent", SandboxLifecycleEvent),
         "\n## Error Codes\n\n",
         "| Code | Name | Meaning |\n",
         "|------|------|---------|\n",
@@ -280,6 +311,8 @@ def generate() -> str:
         "| -32011 | Session Closed | Resume a closed chat before sending messages |\n",
         "| -32012 | Session Busy | Session is still running |\n",
         "| -32013 | Session Invalid | Wrong workspace, unsupported metadata or corrupt history |\n",
+        "| -32014 | Task Cancelled | Execution was cancelled |\n",
+        "| -32015 | Sandbox Operation Failed | Sandbox management or reviewed apply failed |\n",
     ]
     return "".join(sections)
 

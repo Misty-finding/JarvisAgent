@@ -31,8 +31,8 @@ class AgentRunResult(BaseModel):
 
 class EventSubscribeCommand(BaseModel):
     type: Literal["event.subscribe"] = "event.subscribe"
-    topics: list[str]          # fnmatch 模式，如 ["step.*", "tool.*"]
-    scope: str = "global"      # "global" | "run:<run_id>"
+    topics: list[str]  # fnmatch 模式，如 ["step.*", "tool.*"]
+    scope: str = "global"  # "global" | "run:<run_id>"
     replay_from_run: str | None = None  # 设置则先从 events.jsonl 回放历史再接实时流
 
 
@@ -82,6 +82,36 @@ class SessionResumeResult(BaseModel):
     messages: list[dict[str, Any]]
     run_ids: list[str]
     warnings: list[str] = Field(default_factory=list)
+    model_alias: str = "default"
+
+
+class ModelListCommand(BaseModel):
+    type: Literal["model.list"] = "model.list"
+    session_id: str
+
+
+class ModelInfo(BaseModel):
+    name: str
+    provider: str
+    model: str
+    display_name: str | None = None
+    reasoning_effort: str | None = None
+
+
+class ModelListResult(BaseModel):
+    models: list[ModelInfo]
+    selected: str
+
+
+class SessionSetModelCommand(BaseModel):
+    type: Literal["session.set_model"] = "session.set_model"
+    session_id: str
+    name: str
+
+
+class SessionSetModelResult(BaseModel):
+    name: str
+    model: str
 
 
 class SessionSendMessageCommand(BaseModel):
@@ -106,6 +136,27 @@ class SessionGetHistoryResult(BaseModel):
 class SessionCloseCommand(BaseModel):
     type: Literal["session.close"] = "session.close"
     session_id: str
+
+
+class SessionCancelCommand(BaseModel):
+    type: Literal["session.cancel"] = "session.cancel"
+    session_id: str
+
+
+class SessionCancelResult(BaseModel):
+    cancelled: bool
+
+
+class SandboxManageCommand(BaseModel):
+    type: Literal["sandbox.manage"] = "sandbox.manage"
+    action: Literal["status", "changes", "apply", "stop"]
+    session_id: str = Field(pattern=r"^sess-[A-Za-z0-9_-]+$")
+    review_id: str | None = None
+    confirm: str | None = None
+
+
+class SandboxManageResult(BaseModel):
+    data: dict[str, Any]
 
 
 class SessionCloseResult(BaseModel):
@@ -155,8 +206,12 @@ Command = Annotated[
     | SessionSendMessageCommand
     | SessionGetHistoryCommand
     | SessionCloseCommand
+    | SessionCancelCommand
+    | SandboxManageCommand
     | PermissionRespondCommand
     | PermissionSetModeCommand
-    | SessionCompactCommand,
+    | SessionCompactCommand
+    | ModelListCommand
+    | SessionSetModelCommand,
     Discriminator("type"),
 ]

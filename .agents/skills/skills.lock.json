@@ -1,0 +1,476 @@
+{
+  "format_version": 1,
+  "specification": "https://agentskills.io/specification",
+  "skills": [
+    {
+      "name": "java-coding-standards",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/java-coding-standards",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "c7088a434cd7efb4f3bb449bed2178cf683c1d71bc50f8ae5234a8880d3633f4",
+        "UPSTREAM.json": "75c8ef56a36f286363ad7951d3c69f432c35631720eb0fa992e6b19abc3f4800"
+      }
+    },
+    {
+      "name": "springboot-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/springboot-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "ff1884a8492d078d1bbb35f3ce0a8ae25f1ad95dab8596f4944a7c3110680946",
+        "UPSTREAM.json": "90f079a1ab2de802709006b0ebd54b0faf64e305d856760da17ffc78e9b03166"
+      }
+    },
+    {
+      "name": "springboot-security",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/springboot-security",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "566ecf928bf76812d15efd62e2f00841652e1618f0a97d8dda93e1c247a162c5",
+        "UPSTREAM.json": "6556f9266250427a8d554423f77799974210ca3c6edd495b0e5c1079d59c2192"
+      }
+    },
+    {
+      "name": "springboot-tdd",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/springboot-tdd",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "e4bd145484d93fb569eb0e1a09ffeb5cca68533d63c83805146b111c48bba172",
+        "UPSTREAM.json": "b0fdc9ae234056ada8e6ea07d0d363b773020137ae178e37e1398a8c4208dc9c"
+      }
+    },
+    {
+      "name": "springboot-verification",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/springboot-verification",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "c9449f169a3b920fd01875e3b2b2712c743c5fe8f469d2eabfe78886c590d04a",
+        "UPSTREAM.json": "315877b6449e31f38f4704a56bdd620a7f1f54b1d23c14164b76e33168fd22ea"
+      }
+    },
+    {
+      "name": "jpa-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/jpa-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "bcdd45c5e435df259856b20aae47182209b0467b542eacfc7e32bcf452326839",
+        "UPSTREAM.json": "73a0f491cdd206ded114b82cdd06c78b64dfe78cf3f8134ff71c86d73cbbc7bb"
+      }
+    },
+    {
+      "name": "mybatis-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/mybatis-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "9b1d2d79222a57ab7bdbebeeb53a92aa87849f329a96c7df5b9ada651796f9f0",
+        "UPSTREAM.json": "9f1767db2fd2d6d418dc17d3adfd46c6565225ad6eb7f7c27550a087e0e2792d"
+      }
+    },
+    {
+      "name": "mysql-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/mysql-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "cab57c6a6d7e0bab99329945edda900811c40ec929b47aa95611f9df58f7391d",
+        "UPSTREAM.json": "44d87b6492380ca43721675ea4cc4eb6f01b0c5a24017228211f1cea59c96e00"
+      }
+    },
+    {
+      "name": "redis-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/redis-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "6cabb1cd03174a0584ff3538371c780aba90da156db15260691278ed3307d8fe",
+        "UPSTREAM.json": "e4892343118ca1ce764be761cb68a782877da4f8678fe0ed1992648573cdf3af"
+      }
+    },
+    {
+      "name": "python-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/python-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "103e0130dac33a49d26705fc5a2df804980fcab6a0138d65bc7f370a987d49f6",
+        "UPSTREAM.json": "3c8cfcc7a068655e7ae82fe4eb03d260feab7bd370b7e24ee7ab59377f53152f"
+      }
+    },
+    {
+      "name": "python-testing",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/python-testing",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "b9f7a158dae3b6c06c9c75ffe84e27a1edc86092d2afdcb39e96fc2569902eb7",
+        "UPSTREAM.json": "75b655db8a44f41644f887e85974e2a8fb95a254bf58abaea5ba57dde1ade197"
+      }
+    },
+    {
+      "name": "fastapi-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/fastapi-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "f54c2bf5a61eeda47c939da265b1431d609c231611e71b688b0b734a064b18f3",
+        "UPSTREAM.json": "55a37c2a602a06ee570220c685cc06c7d0936443c520dcf4ec8ee273ac2685c7"
+      }
+    },
+    {
+      "name": "api-design",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/api-design",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "250e464413a13c0eb93cc73447b423df1f9aa8e4f80e5e68c41f895b2c33e352",
+        "UPSTREAM.json": "54f1513bd3bd925cca57a078f81109d5eb854a6d4c0d1161a90ff806b7e4aca5"
+      }
+    },
+    {
+      "name": "backend-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/backend-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "9b983d0297a983110fdfda8dce55d19b750ca3e53ef155d75a3eff740d3874b8",
+        "UPSTREAM.json": "8facbb8655a6c4bd371265bf1ad1aa60c6cb7d0783805296cee3d04b822b9846"
+      }
+    },
+    {
+      "name": "database-migrations",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/database-migrations",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "dad2f1964295eee14a96e06213ce3f60992bbcdc1f37a50c828bbc2e1abd79dd",
+        "UPSTREAM.json": "e5a442d735d0f20af60548cbdf0924c6a7ca1bc8ff4077e2401aab2d139bd11c"
+      }
+    },
+    {
+      "name": "docker-patterns",
+      "repository": "https://github.com/affaan-m/ECC",
+      "revision": "90606c8315ee09cafc303515c5f33024db6b9882",
+      "path": "skills/docker-patterns",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "326146379f01bb137c0a5d3c54770c1aa31076705c8b88a7f6b26a460f6221b2",
+        "SKILL.md": "c0cedeb9b64d4468f5af3bb0a97659c654f0ceb916acbec867a29dc682dd633f",
+        "UPSTREAM.json": "adecec451f6594c4323daddf6fd85f4992b83dd3d890ddc090c2b4d9b4f27a28"
+      }
+    },
+    {
+      "name": "python-pro",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/python-pro",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/async-patterns.md": "b7986eb185a4858de3edcb27f537a38d351d3017fdbcac3ba2d905d30ba1cb64",
+        "references/packaging.md": "483d0a257907d2e17ce1cf2e3e7b8b2af88f9eb17fa3a9c4bcc04aa60e930ae3",
+        "references/standard-library.md": "d2997c8f9a491561947c95a182e09b2d584d828d26cb04eb42a194fa4393c6ce",
+        "references/testing.md": "81c8bc148eaf7d32e51171c997016c7deda140b71d6253b15b63b10f038f3c28",
+        "references/type-system.md": "62c4474c4ed29a18fd64002a356cba0239785f68c8530109c74c5bb3162b021b",
+        "SKILL.md": "b94b59450d7372ac0cf47c7313a189796a5a7b0470552b2fe9e9581ec6c3de04",
+        "UPSTREAM.json": "266217856898fc996fd33d2ab3e2d53c398ce6761b06ce68171779fc29e5feff"
+      }
+    },
+    {
+      "name": "debugging-wizard",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/debugging-wizard",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/common-patterns.md": "34e8957fc8dd44033ce6e968c3fca55259b40ba91dc7eb81a819fd2442b08d0a",
+        "references/debugging-tools.md": "406df18ffd885ed96e8ccb541d22b0d8bcd0342cd7a89cc10b82e2675e118333",
+        "references/quick-fixes.md": "5cb8d18dbf1d445e82af556368098b52c8fa1dc70c63ab2d0897bbc5c5744ab1",
+        "references/strategies.md": "2a28d131e430beb667db1efc5dbc2beaeb38572a76ea998ef0330ab27b2b399e",
+        "references/systematic-debugging.md": "1e4a89c67ddfb8e500d95ee21d9a665c7b1a0204c97f752d03d04e96740a07f9",
+        "SKILL.md": "9dc712996f743d1b48e6f57aec344872fd81f6af547d753e5348d91c5b60c56c",
+        "UPSTREAM.json": "a8148c841b2ae696755c75c100a243d74aa7e979aea3f137eeaa24b572207a14"
+      }
+    },
+    {
+      "name": "code-reviewer",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/code-reviewer",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/common-issues.md": "19de3ccd5611e82d1c94636aaf4b0a11a68a09799459285a3ab250a24c04265c",
+        "references/feedback-examples.md": "e87d7a255efaa04a8ee6acfa53f642974c4b2919658671418e670d0db7d038f6",
+        "references/receiving-feedback.md": "62f3958b0be7f3d03cde7bbf00d3f6051a6d98081be3e97d2e7cca5501749c04",
+        "references/report-template.md": "2f2b63c8543b510d4dceffb9336627d02aa5f6f722a805d6fa93572d7673a885",
+        "references/review-checklist.md": "c0e348f3896a274c407da7bf52570377dd9b7d0d3284d8f582559d890c3dfbcc",
+        "references/spec-compliance-review.md": "a5fcb93e7058b4c089b871ae954d8ab5cf45702e91c54242b06cf7af455f57df",
+        "SKILL.md": "f65c4468751bb509f4ff78b791dfbc664dfe6191d36d04626c92ed8c2174293b",
+        "UPSTREAM.json": "8f647df3dd46da11caada4f552c160f134994e8558d5df111b7a3847df16c4d3"
+      }
+    },
+    {
+      "name": "test-master",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/test-master",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/automation-frameworks.md": "1ad32a08a6295656b19c88c24e0d2e7f0416822306172c49de170dd195b003f2",
+        "references/e2e-testing.md": "26d85ec0572ece9556a15eb681f5f4a3200d08f1faf81a41e631f617081050e0",
+        "references/integration-testing.md": "1f59967cdbb6419e7ac3be2818d8fa44f874cd7ed78edb5507ec6e01387ef629",
+        "references/performance-testing.md": "f0928064fccc35bbe67174f8218f2eef34afe69facc0c85476806f596ae4f432",
+        "references/qa-methodology.md": "9277588309c80929241df3302150cae1c966cb83dd1dc2be3125a943fa4d4477",
+        "references/security-testing.md": "e899eedc05127c7bd7081ccbdf3067167b4308b783181923f30749dab18217ce",
+        "references/tdd-iron-laws.md": "1f719ea75af92dac32762b9e27d7f1bd6dfd7be9d71c8b8db7b1c8842b34bed1",
+        "references/test-reports.md": "9202c94244a2da9981fec66042634244478bf8d762061856f71d202e0e4744cf",
+        "references/testing-anti-patterns.md": "ae653194178f04a7fe7662d256e2d11da763d6d2e04fcd091f7b374d70b28945",
+        "references/unit-testing.md": "6165c82a10c79295ce45329fa16895128888ffd874269ee509af56061291c43a",
+        "SKILL.md": "93c3710547afb31d51962b090dbc282d10d7f35528967ca307f135771460bb41",
+        "UPSTREAM.json": "828fc15d2232ecc7c920bb3a3af37eee6d57dfe0a41fe5b8399790beb443577a"
+      }
+    },
+    {
+      "name": "security-reviewer",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/security-reviewer",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/infrastructure-security.md": "5bf4916b3f7172ddac0d86be7071b96ad11fc0de6544cd244ce6f75790732ef9",
+        "references/penetration-testing.md": "30d15ef551d41e14399ddd80e74292e4275ce96e60520595a503e072b553c01a",
+        "references/report-template.md": "047be06a70bf44f47ae2c124318702f185200f43c122ebf26bcbc47d8f53f18a",
+        "references/sast-tools.md": "37b32c0dd34ee34dba396382d8a5a9c6eb170ceee333736a97e3750a34272055",
+        "references/secret-scanning.md": "e8b378a5ebe0cfc707acb468fb565331a5729401bacaa9029a4eb007ae55dedb",
+        "references/vulnerability-patterns.md": "cfa6dc7e7d3d181a5936e0d4a3672138ba764b85b208dd9e6fec83f29cef21ec",
+        "SKILL.md": "9f5feff0c3957fa4f1a872833f5df9cef7d3b68ec4d94812e1e659e0aeb28d21",
+        "UPSTREAM.json": "f19be434909d8d7e03ba898c1297ae388b1b859fd472dfbb9e1d66475032ed27"
+      }
+    },
+    {
+      "name": "database-optimizer",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/database-optimizer",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/index-strategies.md": "05f5e3f4e603ca6994016260996b3cfb6c28cf6d87ebd0b7f33621ca266840f4",
+        "references/monitoring-analysis.md": "95fb6e97985cb6fd5cd01739117cb4df6e286d64b94c39b2033d4b5f390b4c93",
+        "references/mysql-tuning.md": "62dc54ae06a2936cb9d3497a0a9f51eace78b83bf3673364e33c81fae237dedc",
+        "references/postgresql-tuning.md": "197da2b922e1f5d22cf824de8645f645e064d52b9745b125a36abee89e34da3a",
+        "references/query-optimization.md": "dce3acf3b12dee597dcdbc73d2ba26b20d53f72f3718fad9ddb4b62f56a25e6e",
+        "SKILL.md": "f36ebc7a53b1d786a8599ee63e35e142577592a6393a9953f54278ed6cab01fc",
+        "UPSTREAM.json": "1831929ea9c889498d3515bd7c900fd99a455c6b586c157e6d6a75bc64349635"
+      }
+    },
+    {
+      "name": "microservices-architect",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/microservices-architect",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/communication.md": "ca2045d42651ac976bc1647adecbd8e5251e62db2f3a8b8113847d3375024b95",
+        "references/data.md": "41d754181a8c2b8df3cff9fddb8d53c098fd8bc8b7b5e1e0840c6f1b9f3784b6",
+        "references/decomposition.md": "176e233a770dd2605f70f773bedffde7862573238c571bd5edcd102c92623ba0",
+        "references/observability.md": "67fdf013294369de39c4742c5782bc9e6590e7e73e6ca3cb520d43a54d7f6a43",
+        "references/patterns.md": "7ff849bd85c6eff82ab94c25d0fe5683c16480cefa3a8e441b4041f7c0e9a85f",
+        "SKILL.md": "66305b25acce73f3634377f2823afa1b1c7fe9104dccb242acb4613d76e26ff2",
+        "UPSTREAM.json": "c54550fc1074d3740ad4a97cb9c595e26c95513aea96a9474eeb9eeeef2d2e0f"
+      }
+    },
+    {
+      "name": "mcp-developer",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/mcp-developer",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/protocol.md": "967f215e0ec324ddfcf95f3c98e8ccaa791484618431971b3d1d2ba994955ba9",
+        "references/python-sdk.md": "395b3fce55012361c9397cac7b6ab51477789756524b9ace0a7f3626946a3c9d",
+        "references/resources.md": "c32f64a706515ea0a782c574a71024c97b43342f077f06825573e551168dd7c8",
+        "references/tools.md": "f261f11d0fcaa49f12b527ce64832b65c2d35ad96b913e6b476b54b06410f0f2",
+        "references/typescript-sdk.md": "cc7b746f2fafac7669d9fd8f076d82181ab2177a5fe7887e054f31b59bc3eee6",
+        "SKILL.md": "d2f1ddf1ce82567c04468d041745b3c3a33d3b39ddad21de9612000c09932f3e",
+        "UPSTREAM.json": "198cab64b5d808a07f8abb74566deb81c501d8af4cbae371256c58595db55b66"
+      }
+    },
+    {
+      "name": "react-expert",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/react-expert",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/hooks-patterns.md": "1b812584ea3f94a51e30b014f986781ea57e4f3812927d23f2a65847b0bb01cd",
+        "references/migration-class-to-modern.md": "a1c165c95deba74d49429d2ccbeb51adaac314c1f4b7cd70dd73b8472defaf7b",
+        "references/performance.md": "49cc1262ff7163cfdab606f8842def3109bba5a3c3472181515e7098514a587f",
+        "references/react-19-features.md": "15b179809f620c2a703765aa23eedfa93a0aabc3d7a8b030e4b8552c0517bbbb",
+        "references/server-components.md": "f5a1c727e772e341bee46706fe94878207b1f5e92c2b2893b62e8a1bfef2ff90",
+        "references/state-management.md": "df7bb47ff8efa87970fe32c1726f723ffa53e74c25aff3b13764a2ab63f8bcee",
+        "references/testing-react.md": "5c648e0ca79f2326be24d95f0dbb4c47968251dad1f295152326b5ba4b606a08",
+        "SKILL.md": "d513fbf10bff343c9d641145e06876edb5f924fca0de4878ce685d3518b41010",
+        "UPSTREAM.json": "934f5e89baf07baff29656b6a0db0e8759af521a8ffcd7d7fcbf9953577f6364"
+      }
+    },
+    {
+      "name": "typescript-pro",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/typescript-pro",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/advanced-types.md": "273042ee8dba7fe809085856cea8e71eaa363d2cd19d2ba021d852d971777f20",
+        "references/configuration.md": "4ba4a37687c20a4936b4db872fea1cbeac31ec6ee19c9b959c9d475d255f0b5b",
+        "references/patterns.md": "1a3cec402f39c71b8fe6004b98b85c134d09bbed8141c82b86b9109b238e8ddd",
+        "references/type-guards.md": "4d6c898d2a7dc2d4d3e762969c9a01d158301147153a6692c84e76db37d714b3",
+        "references/utility-types.md": "10e11832c61564f63ee240fa8cca40c1dc32f9a27cde09c750077b0ec248efba",
+        "SKILL.md": "1647f8b6f7efc926b61ccfad4832317bf336a78b13265735229e25602afb0350",
+        "UPSTREAM.json": "1e1a90e973940591eb36e0e7e65381db7f6409498732b4139d945cd0ac1dccdb"
+      }
+    },
+    {
+      "name": "nextjs-developer",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/nextjs-developer",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/app-router.md": "6ad5dcb2db0c98b13e87846936670c861da27346edebe75bf096cb08b78f6330",
+        "references/data-fetching.md": "abbea7c3351c7ad77ca820e48e6f27cd68f29638b82e39dc65560a75f5151255",
+        "references/deployment.md": "7a57d67d37a83825404ecc13fa24833432bafb547002530a189e20fa9086bf70",
+        "references/server-actions.md": "c708b825296d525744e517d630402d7d73fb64df7db02882f0107a1abc4cb549",
+        "references/server-components.md": "c03e919c56f4588840cd4141e015f900fa6993567d3720d4736e3a3063663cc9",
+        "SKILL.md": "cbe6b04b18fa956f2a6563d996dde44a4c14e13862f58fdbe9eb891e65acf562",
+        "UPSTREAM.json": "33a1993abc6b879c1259755d6c8187d2b054bffe09d52a6f61b7f72df97b4814"
+      }
+    },
+    {
+      "name": "playwright-expert",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/playwright-expert",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/api-mocking.md": "e4f788c6355a79c9baa21b232f55788cc80620d735d29d43dea62667120fde45",
+        "references/configuration.md": "f65f5eb5a91d3a13dafb845026ee07f41353e3b82bbb6def4fc7054e55b6f2aa",
+        "references/debugging-flaky.md": "e559423dad74e5c384ba3de0a1c0db8d7f7723bd1a19cdc46f25b0f7622d5627",
+        "references/page-object-model.md": "256aa9f89ed8ef2a8ca0126007f44fa1324414197130455a48455b1184ab7226",
+        "references/selectors-locators.md": "659941eebd0f53ecde7dba938ec035d76673b6b0bb7cba06441a06e46922e134",
+        "SKILL.md": "d84e24b9d20e910e519a763e4dc7f0744e81497ffcc6b29cf7806dc0c07cca12",
+        "UPSTREAM.json": "0022155cc8eba553abb8f14fe5522979c7dd281e02523a8749fde88ef59f052b"
+      }
+    },
+    {
+      "name": "rag-architect",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/rag-architect",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/chunking-strategies.md": "1b732310ebf7b5e64c5abef46b13a11614f1c3dc331c214389f2643504a9a809",
+        "references/embedding-models.md": "d6916896df46601bf32eacc51e21358296195b4bec979c3ec74ede28a12e01d8",
+        "references/rag-evaluation.md": "de20bdaa8180b00bdd931dd79870926f747de4dafc1c0a66a64609293a8131e0",
+        "references/retrieval-optimization.md": "3a5b7181bd0991be743b2761a792f5371d93b38747d78393606f5ce75247c90c",
+        "references/vector-databases.md": "faddfb37db3207e346c83298c8a972442501927ec73b278e6f4d1cded13ac115",
+        "SKILL.md": "36e21290e5df36ed3eaf007d0e91781c7453dc46c6dedd6d31c1c382b28cf137",
+        "UPSTREAM.json": "4ce248e3205105964e2581044553f8f82fcb191bb38746099d8bb0785364048f"
+      }
+    },
+    {
+      "name": "prompt-engineer",
+      "repository": "https://github.com/Jeffallan/claude-skills",
+      "revision": "02b05028ba6c93f7aed45314b15c0dd5abead9d6",
+      "path": "skills/prompt-engineer",
+      "license": "MIT",
+      "modifications": "None; upstream files preserved. LICENSE and UPSTREAM.json added for attribution.",
+      "files": {
+        "LICENSE": "06dcddbb6908a0c6dd4a9e8ec822eea41d5a460a53089fecccc8a68049e99241",
+        "references/context-management.md": "7baceb0abd3cbac9e911fa48bfbc97965f122fe53b93e9967c002bfbdcd1b66b",
+        "references/evaluation-frameworks.md": "0eff6ae070d12c0d62f2c9ce952e7e5225e5ec4197fcb8a717cd359c189b9d22",
+        "references/prompt-optimization.md": "ccc38e0e5816f1afd9e62dda4b7e0f14b8b57f5d79fea2f84d4f574ee4ec3bee",
+        "references/prompt-patterns.md": "b749ede7feb361c9f7ac0c729c19bce11c5d733c3a0e93d72b6f3e99f7b7f0cb",
+        "references/structured-outputs.md": "aa01c577ff3a23f281cc9385475293e9d46ded5ac99c712e318941fd5f4b9969",
+        "references/system-prompts.md": "18a3054c96edbc7f5cbbeba338898fc49fbfe56b3f07b004285da292acd22513",
+        "SKILL.md": "3b3f4fd1cc1498584194adb584920b3ec7637dd90285939e13695f3f84c6e785",
+        "UPSTREAM.json": "20425a995d69be7b7eac78a07d50c6759e10576ae920d1bd4ed0ce91e348688b"
+      }
+    }
+  ]
+}

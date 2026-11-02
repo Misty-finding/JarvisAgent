@@ -21,6 +21,9 @@ class Session:
     workspace: str = ""
     active_run_id: str | None = None
     last_run_state: RunState | None = None
+    model_alias: str = "default"
+    execution_backend: str = "local"
+    sandbox_id: str | None = None
 
     # 将 Session 转为可写入 meta.json 的普通 dict
     def to_dict(self) -> dict[str, Any]:
@@ -36,6 +39,9 @@ class Session:
             "workspace": self.workspace,
             "active_run_id": self.active_run_id,
             "last_run_state": self.last_run_state,
+            "model_alias": self.model_alias,
+            "execution_backend": self.execution_backend,
+            "sandbox_id": self.sandbox_id,
         }
 
     # 从 meta.json 的 dict 还原 Session 对象
@@ -53,4 +59,7 @@ class Session:
             workspace=str(data.get("workspace", "")),
             active_run_id=data.get("active_run_id"),
             last_run_state=data.get("last_run_state"),
+            model_alias=str(data.get("model_alias", "default")),
+            execution_backend=str(data.get("execution_backend", "local")),
+            sandbox_id=data.get("sandbox_id"),
         )

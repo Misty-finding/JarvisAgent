@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from collections.abc import AsyncGenerator
+from pathlib import Path
 
 import pytest
 
@@ -20,13 +21,23 @@ def free_port() -> int:
 
 
 @pytest.fixture
-async def running_daemon(free_port: int) -> AsyncGenerator[subprocess.Popen[bytes], None]:
+async def running_daemon(
+    free_port: int,
+    tmp_path: Path,
+) -> AsyncGenerator[subprocess.Popen[bytes], None]:
     env = os.environ.copy()
     env["JARVIS_PORT"] = str(free_port)
     env["JARVIS_LOG_FILE"] = ""
     env["JARVIS_LOG_LEVEL"] = "WARNING"
     env["JARVIS_LLM_PROVIDER"] = "anthropic"
     env["ANTHROPIC_API_KEY"] = "test-key"
+    # Daemon tests must not read local credentials or modify the developer's sessions.
+    test_config = tmp_path / "daemon.toml"
+    test_config.write_text("", encoding="utf-8")
+    env.setdefault("JARVIS_CONFIG", str(test_config))
+    env.setdefault("JARVIS_WORKSPACE_ROOT", str(tmp_path))
+    env["JARVIS_EXECUTION_BACKEND"] = "local"
+    env["JARVIS_TRACE_FILE"] = str(tmp_path / "trace.jsonl")
 
     proc = subprocess.Popen([sys.executable, "-m", "jarvis.core"], env=env)
 

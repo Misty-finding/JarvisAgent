@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
+from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 import anthropic
@@ -13,6 +16,7 @@ from jarvis.core.bus.events import LlmModelSelectedEvent, LlmTokenEvent, LlmUsag
 from jarvis.core.config import LlmConfig
 from jarvis.core.events.bus import EventBus
 from jarvis.core.llm.base import LLMProvider
+from jarvis.core.llm.openai_responses import OpenAIResponsesProvider
 from jarvis.core.llm.types import LlmResponse, ToolCallBlock, UsageStats
 
 _MODEL_CONTEXT_WINDOWS: dict[str, int] = {
@@ -100,7 +104,7 @@ class AnthropicProvider:
             "model": self._model,
             "max_tokens": 8192,
             "system": system_blocks,
-            "messages": messages,
+            "messages": _anthropic_messages(messages),
         }
         if tools:
             kwargs["tools"] = tools
@@ -212,9 +216,64 @@ class DeepSeekProvider(AnthropicProvider):
         super().__init__(model=model, client=deepseek_client)
 
 
-# 根据配置创建统一的 LLM provider；Agent loop 只依赖 LLMProvider 协议
-def create_llm_provider(config: LlmConfig) -> LLMProvider:
+# 去掉其他协议的私有状态，保证切回 Anthropic 时历史内容仍然有效
+def _anthropic_messages(messages: list[dict[str, object]]) -> list[dict[str, object]]:
+    converted = []
+    for message in messages:
+        content = message.get("content")
+        if isinstance(content, list):
+            content = [b for b in content if b.get("type") != "provider_state"]
+            if not content:
+                continue
+            message = {**message, "content": content}
+        converted.append(message)
+    return converted
+
+
+# 从命名模型获得完整配置，避免继承其他协议的地址或密钥
+def resolve_model_config(config: LlmConfig, name: str | None = None) -> LlmConfig:
+    if name is None or name == "default":
+        return config
+    if name not in config.models:
+        raise ValueError(f"Unknown model profile: {name}")
+    profile = config.models[name]
+    key = profile.api_key or os.environ.get(profile.api_key_env)
+    return replace(
+        config, provider=profile.provider, default_model=profile.model,
+        base_url=profile.base_url, reasoning_effort=profile.reasoning_effort,
+        store=profile.store, context_window=profile.context_window,
+        api_key_file=profile.api_key_file,
+        openai_api_key=key, anthropic_api_key=key, deepseek_api_key=key,
+    )
+
+
+# 根据显式配置读取认证文件，异常信息只包含文件路径而不包含密钥内容
+def _openai_key(config: LlmConfig) -> str:
+    key = config.openai_api_key
+    if not key and config.api_key_file:
+        path = Path(config.api_key_file).expanduser()
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            key = data.get("OPENAI_API_KEY")
+        except (OSError, ValueError, AttributeError) as exc:
+            raise ValueError(f"Cannot read OpenAI API key file: {path}") from exc
+    key = key or os.environ.get("OPENAI_API_KEY")
+    if not isinstance(key, str) or not key.strip():
+        raise ValueError("Set OPENAI_API_KEY or configure llm.api_key_file")
+    return key
+
+
+# 根据默认或命名配置创建统一 provider，所有协议共用现有 Agent Loop
+def create_llm_provider(config: LlmConfig, name: str | None = None) -> LLMProvider:
+    config = resolve_model_config(config, name)
     provider = config.provider.strip().lower()
+    if provider in {"openai", "openai_responses"}:
+        return OpenAIResponsesProvider(
+            config.default_model, api_key=_openai_key(config),
+            base_url=config.base_url or "https://api.openai.com/v1",
+            reasoning_effort=config.reasoning_effort, store=config.store,
+            context_window=config.context_window,
+        )
     if provider in {"anthropic", "claude"}:
         return AnthropicProvider(
             config.default_model,
@@ -229,5 +288,5 @@ def create_llm_provider(config: LlmConfig) -> LLMProvider:
         )
     raise SystemExit(
         f"Unsupported LLM provider: {config.provider!r}. "
-        "Supported providers: anthropic, deepseek"
+        "Supported providers: anthropic, deepseek, openai"
     )

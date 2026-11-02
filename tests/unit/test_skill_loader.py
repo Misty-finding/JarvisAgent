@@ -106,6 +106,8 @@ def test_project_overrides_global(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert "local system prompt" in skill.system_prompt_template
 
 
+# 功能：从其他当前目录也能解析显式工作区的项目 Skill
+# 设计：将调用目录和项目目录分开，防止后台 Core 错用进程当前路径
 def test_explicit_workspace_finds_project_skill_from_another_cwd(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -125,3 +127,90 @@ def test_explicit_workspace_finds_project_skill_from_another_cwd(
 
     assert skill is not None
     assert skill.description == "workspace skill"
+
+
+# 功能：标准 YAML 的折叠标量、引号、元数据和工具声明均能保留
+# 设计：同时使用 CRLF、BOM 和含冒号字符串，覆盖原手写解析器容易误读的真实格式
+def test_standard_frontmatter_and_resources(tmp_path: Path) -> None:
+    from jarvis.core.skills.loader import _parse_skill_file
+
+    root = tmp_path / "standard-skill"
+    (root / "references").mkdir(parents=True)
+    (root / "references" / "guide.md").write_text("private-reference-content", encoding="utf-8")
+    path = root / "SKILL.md"
+    path.write_bytes(("\ufeff---\nname: standard-skill\ndescription: >-\n"
+                      "  Review code: safely\n  and thoroughly.\nlicense: MIT\n"
+                      "compatibility: 'Requires Python: 3.12'\n"
+                      "allowed-tools: Bash(git:*) Bash(jq:*) Read\n"
+                      "metadata:\n  author: 'someone: else'\n  version: '1.0'\n"
+                      "extra-client-field:\n  - not-a-tool\n---\n"
+                      "Read references/guide.md before reviewing.\n").replace("\n", "\r\n").encode())
+    skill = _parse_skill_file(path)
+    assert skill.description == "Review code: safely and thoroughly."
+    assert skill.metadata == {"author": "someone: else", "version": "1.0"}
+    assert skill.allowed_tools == ["Bash(git:*)", "Bash(jq:*)", "Read"]
+    assert skill.tool_whitelist is None
+    assert skill.license == "MIT"
+    assert skill.source_path == path.resolve()
+    assert skill.resolve_resource("references/guide.md").read_text() == "private-reference-content"
+    rendered = SkillLoader(tmp_path).render_prompt(skill, "fix asyncio cancellation")
+    assert "fix asyncio cancellation" in rendered  # 上游无需包含 $ARGUMENTS
+    assert str(root.resolve()) in rendered
+    assert "references/guide.md" in rendered
+    assert "private-reference-content" not in rendered
+    assert "Requires Python: 3.12" in rendered
+    with pytest.raises(ValueError, match="inside"):
+        skill.resolve_resource("../../outside.txt")
+
+
+# 功能：错误或不安全 YAML 与非法标准名称不会出现在目录中
+# 设计：参数化格式边界并保留同目录有效 Skill，验证错误隔离而不是整个目录加载失败
+@pytest.mark.parametrize("frontmatter", [
+    "description: missing name", "name: broken", "name: other\ndescription: mismatch",
+    "name: broken\ndescription: ''", "name: broken\ndescription: [not, a, string]",
+    "name: broken\ndescription: yes", "name: broken\ndescription: test\nmetadata: [bad]",
+    "name: broken\ndescription: !!python/object/apply:os.system ['exit 1']",
+    "name: broken\ndescription: [unterminated", "- not\n- a mapping",
+])
+def test_invalid_standard_skill_is_isolated(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, frontmatter: str,
+) -> None:
+    root = tmp_path / ".agents" / "skills" / "broken"
+    root.mkdir(parents=True)
+    (root / "SKILL.md").write_text(f"---\n{frontmatter}\n---\nbody", encoding="utf-8")
+    loader = SkillLoader(tmp_path)
+    assert loader.resolve("broken") is None
+    assert loader.resolve("review") is not None
+    assert "Skipping invalid skill" in caplog.text
+
+
+# 功能：标准目录和旧目录按项目优先级覆盖，旧文件的列表不会误作工具声明
+# 设计：隔离全局路径并逐层添加同名 Skill，验证补全列表和 resolve 使用同一解析规则
+def test_standard_search_precedence_and_legacy_metadata(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    global_dir = tmp_path / "global" / ".agents" / "skills"
+    standard_dir = project / ".agents" / "skills"
+    legacy_dir = project / ".jarvis" / "skills"
+    directories = [global_dir, standard_dir, legacy_dir]
+    monkeypatch.setattr(SkillLoader, "_directories", lambda _: directories)
+    loader = SkillLoader(project)
+    for index, directory in enumerate(directories):
+        skill_dir = directory / "shared"
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: shared\ndescription: source {index}\n"
+            "metadata:\n  origin: test\nother:\n  - not-a-tool\n---\nbody", encoding="utf-8",
+        )
+        skill = loader.resolve("shared")
+        assert skill is not None and skill.description == f"source {index}"
+        assert skill.allowed_tools == []
+        assert loader.list_all() == ["shared"]
+    assert loader.resolve("../shared") is None
+    legacy = legacy_dir / "alias.md"
+    legacy.write_text("---\nname: declared\ndescription: old\n"
+                      "allowed_tools: [read_file, bash]\n---\nbody", encoding="utf-8")
+    skill = loader.resolve("declared")
+    assert skill is not None and skill.tool_whitelist == ["read_file", "bash"]
+    assert "alias" not in loader.list_all()

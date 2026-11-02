@@ -17,6 +17,7 @@ from jarvis.core.bus.events import (
     SessionWaitingForInputEvent,
     SkillInvokedEvent,
 )
+from jarvis.core.config import LlmConfig
 from jarvis.core.events.bus import EventBus
 from jarvis.core.runs import new_run_id
 from jarvis.core.session.model import Session, SessionMode
@@ -48,13 +49,16 @@ class SessionManager:
         bus: EventBus,
         provider: LLMProvider | None = None,
         workspace: Path | None = None,
+        llm_config: LlmConfig | None = None,
     ) -> None:
         self._store = store
         self._runner_factory = runner_factory
         self._bus = bus
         self._provider = provider
+        self._llm_config = llm_config
         self._sessions: dict[str, Session] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._run_tasks: dict[str, asyncio.Task[Any]] = {}
         self._skill_loader = SkillLoader(workspace)
         self._workspace = workspace.resolve() if workspace is not None else None
 
@@ -80,9 +84,12 @@ class SessionManager:
 
     # 检查会话归属，旧会话按当前项目的存储目录确定作用域
     def _matches_workspace(self, session: Session) -> bool:
-        return not session.workspace or self._workspace is None or os.path.normcase(
-            str(Path(session.workspace).resolve())
-        ) == os.path.normcase(str(self._workspace))
+        return (
+            not session.workspace
+            or self._workspace is None
+            or os.path.normcase(str(Path(session.workspace).resolve()))
+            == os.path.normcase(str(self._workspace))
+        )
 
     # 列出当前项目可恢复的聊天会话，并以真实协程锁判断是否仍在执行
     async def list_sessions(self) -> SessionListResult:
@@ -98,14 +105,21 @@ class SessionManager:
             busy = lock is not None and lock.locked()
             state = session.last_run_state
             if not busy and (
-                session.active_run_id or state == "running"
+                session.active_run_id
+                or state == "running"
                 or (session.status == "active" and session.run_ids)
             ):
                 state = "interrupted"
-            summaries.append(SessionSummary(
-                session_id=session.id, title=session.title, updated_at=session.updated_at,
-                status=session.status, last_run_state=state, busy=busy,
-            ))
+            summaries.append(
+                SessionSummary(
+                    session_id=session.id,
+                    title=session.title,
+                    updated_at=session.updated_at,
+                    status=session.status,
+                    last_run_state=state,
+                    busy=busy,
+                )
+            )
         return SessionListResult(sessions=summaries, warnings=warnings)
 
     # 从磁盘按需恢复聊天会话，整理中断历史后等待新输入，绝不自动调用模型或工具
@@ -125,8 +139,10 @@ class SessionManager:
             raise HandlerError(SESSION_BUSY, "会话正在运行，请等待执行结束后恢复。")
         async with lock:
             interrupted_run = session.active_run_id
-            if not interrupted_run and session.run_ids and (
-                session.status == "active" or session.last_run_state == "interrupted"
+            if (
+                not interrupted_run
+                and session.run_ids
+                and (session.status == "active" or session.last_run_state == "interrupted")
             ):
                 interrupted_run = session.run_ids[-1]
             try:
@@ -143,8 +159,13 @@ class SessionManager:
             self._sessions[sid] = session
             await self._bus.publish(SessionResumedEvent(session_id=sid, ts=_now()))
             return SessionResumeResult(
-                session_id=sid, status=session.status, title=session.title,
-                messages=messages, run_ids=session.run_ids, warnings=warnings,
+                session_id=sid,
+                status=session.status,
+                title=session.title,
+                messages=messages,
+                run_ids=session.run_ids,
+                warnings=warnings,
+                model_alias=session.model_alias,
             )
 
     # 处理用户消息，追加 thread 并启动一次 agent run
@@ -182,7 +203,10 @@ class SessionManager:
             self._store.write_meta(session)
 
             try:
-                # Skill 解析：检测 "/" 前缀，展开为系统提示覆盖和工具白名单
+                current_task = asyncio.current_task()
+                if current_task is not None:
+                    self._run_tasks[sid] = current_task
+                # Skill 解析：检测斜杠调用，注入含资源根目录和用户参数的完整指令
                 goal = content
                 system_prompt_override: str | None = None
                 tool_whitelist: list[str] | None = None
@@ -193,8 +217,8 @@ class SessionManager:
                     skill = self._skill_loader.resolve(skill_name)
                     if skill is not None:
                         goal = self._skill_loader.render_prompt(skill, arguments)
-                        system_prompt_override = skill.system_prompt_template
-                        tool_whitelist = skill.allowed_tools or None
+                        system_prompt_override = goal
+                        tool_whitelist = skill.tool_whitelist
                         await self._bus.publish(
                             SkillInvokedEvent(
                                 skill_name=skill_name,
@@ -222,6 +246,7 @@ class SessionManager:
                 session.last_run_state = "failed"
                 raise
             finally:
+                self._run_tasks.pop(sid, None)
                 session.active_run_id = None
                 session.updated_at = _now()
                 session.status = "closed" if session.mode == "one_shot" else "waiting_for_input"
@@ -231,10 +256,24 @@ class SessionManager:
                         SessionClosedEvent(session_id=sid, ts=session.updated_at)
                     )
                 else:
-                    await self._bus.publish(SessionWaitingForInputEvent(
-                        session_id=sid, last_run_id=run_id, ts=session.updated_at,
-                    ))
+                    await self._bus.publish(
+                        SessionWaitingForInputEvent(
+                            session_id=sid,
+                            last_run_id=run_id,
+                            ts=session.updated_at,
+                        )
+                    )
             return run_id
+
+    async def cancel(self, sid: str) -> bool:
+        """Cancel a session run and wait until its backend has terminated execution."""
+        self._get_session(sid)
+        task = self._run_tasks.get(sid)
+        if task is None or task.done():
+            return False
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        return True
 
     # 关闭指定 session 并更新 meta.json
     async def close(self, sid: str) -> None:
@@ -250,29 +289,93 @@ class SessionManager:
 
     # 手动压缩指定 session 的 thread，将摘要持久化写入 thread.jsonl
     async def compact(self, sid: str, focus: str = "") -> Any:
-        self._get_session(sid)
+        from jarvis.core.llm.provider import create_llm_provider
+
+        session = self._get_session(sid)
         lock = self._locks[sid]
         if lock.locked():
             raise HandlerError(SESSION_BUSY, "session busy")
-        if self._provider is None:
+        provider = self._provider
+        if self._llm_config is not None and session.model_alias != "default":
+            provider = create_llm_provider(self._llm_config, session.model_alias)
+        if provider is None:
             raise HandlerError(-32020, "provider not available for compaction")
         async with lock:
             from jarvis.core.bus.commands import SessionCompactResult
             from jarvis.core.compact.compactor import Compactor
+
             messages = self._store.read_messages(sid)
             session_dir = self._store.session_dir(sid)
             compactor = Compactor(self._bus, session_dir, sid)
-            result = await compactor.compact_messages(messages, self._provider, focus=focus)
+            result = await compactor.compact_messages(messages, provider, focus=focus)
             if result is None:
                 raise HandlerError(-32021, "compaction failed or not beneficial")
-            self._store.write_compacted(sid, [
-                {"role": "user", "content": result.summary_text},
-                {"role": "assistant", "content": "Understood, I'll continue from this summary."},
-            ])
+            self._store.write_compacted(
+                sid,
+                [
+                    {"role": "user", "content": result.summary_text},
+                    {
+                        "role": "assistant",
+                        "content": "Understood, I'll continue from this summary.",
+                    },
+                ],
+            )
             return SessionCompactResult(
                 summary_tokens=result.summary_tokens,
                 saved_tokens=max(0, result.original_token_estimate - result.summary_tokens),
             )
+
+    # 返回会话可选模型，不向客户端暴露密钥及认证文件信息
+    def list_models(self, sid: str) -> Any:
+        from jarvis.core.bus.commands import ModelInfo, ModelListResult
+        from jarvis.core.llm.provider import resolve_model_config
+
+        session = self._get_session(sid)
+        config = self._llm_config
+        if config is None:
+            raise HandlerError(-32022, "Model configuration is unavailable")
+        models = []
+        for name in ["default", *config.models]:
+            selected = resolve_model_config(config, name)
+            models.append(
+                ModelInfo(
+                    name=name,
+                    provider=selected.provider,
+                    model=selected.default_model,
+                    display_name=config.models[name].display_name if name != "default" else None,
+                    reasoning_effort=selected.reasoning_effort,
+                )
+            )
+        return ModelListResult(models=models, selected=session.model_alias)
+
+    # 在空闲会话中切换并持久化模型，检查配置但不发起模型请求
+    async def set_model(self, sid: str, name: str) -> Any:
+        from jarvis.core.bus.commands import SessionSetModelResult
+        from jarvis.core.llm.provider import create_llm_provider, resolve_model_config
+
+        session = self._get_session(sid)
+        lock = self._locks[sid]
+        if lock.locked():
+            raise HandlerError(SESSION_BUSY, "session busy")
+        if session.status == "closed":
+            raise HandlerError(SESSION_CLOSED, "session already closed")
+        if self._llm_config is None:
+            raise HandlerError(-32022, "Model configuration is unavailable")
+        async with lock:
+            try:
+                config = resolve_model_config(self._llm_config, name)
+                create_llm_provider(self._llm_config, name)
+            except (ValueError, SystemExit) as exc:
+                raise HandlerError(-32602, str(exc)) from exc
+            previous = session.model_alias
+            session.model_alias = name
+            session.updated_at = _now()
+            try:
+                self._store.write_meta(session)
+            except OSError:
+                session.model_alias = previous
+                raise
+            return SessionSetModelResult(name=name, model=config.default_model)
 
     # 读取指定 session 的完整 thread 历史
     async def get_history(self, sid: str) -> list[dict[str, Any]]:

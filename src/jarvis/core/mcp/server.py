@@ -17,7 +17,10 @@ class McpServerManager:
         self._tools: list[McpTool] = []
 
     # 依次连接每个 MCP server，发现工具后缓存供后续 registry 使用；失败时记录日志并跳过
-    async def start_all(self, servers: list[McpServerConfig]) -> None:
+    async def start_all(self, servers: list[McpServerConfig], *, isolated: bool = False) -> None:
+        if isolated and servers:
+            log.warning("CubeSandbox mode: host MCP servers disabled until explicitly sandboxed")
+            return
         for cfg in servers:
             try:
                 client = await self._connect(cfg)
@@ -27,7 +30,8 @@ class McpServerManager:
                 self._clients[cfg.name] = client
                 log.info(
                     "mcp: server '%s' connected, %d tool(s) discovered",
-                    cfg.name, len(tool_defs),
+                    cfg.name,
+                    len(tool_defs),
                 )
             except Exception:
                 log.exception("mcp: server '%s' failed to start, skipping", cfg.name)

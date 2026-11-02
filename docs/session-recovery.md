@@ -1,7 +1,9 @@
 # 会话恢复
 
-入口仅有 `jarvis --resume`（TUI 历史选择器）和 `jarvis --resume sess-xxx`
-（指定会话）。普通 `jarvis` 仍创建新会话，`--replay` 仍用于观察历史事件。
+启动入口为 `jarvis --resume`（TUI 历史选择器）和 `jarvis --resume sess-xxx`
+（指定会话）。聊天中也可输入 `/resume` 或 `/resume sess-xxx`，无需退出 TUI。
+取消选择或恢复失败时保留当前聊天，执行任务期间不能切换；选择器中的“新建会话”
+会新建并切换到空白聊天。普通 `jarvis` 仍创建新会话，`--replay` 仍用于观察历史事件。
 
 ## 保存与恢复
 

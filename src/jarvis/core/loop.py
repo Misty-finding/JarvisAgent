@@ -49,7 +49,7 @@ class AgentLoop:
     # 驱动 plan→act→observe 循环直到上下文终止；CancelledError 向上传播
     async def run(self, context: ExecutionContext) -> None:
         finalization_turn = False
-        base_system = build_runtime_system_prompt(context.max_steps)
+        base_system = build_runtime_system_prompt(context.max_steps, context.execution_runtime)
         while not context.is_done():
             context.step += 1
             await self._bus.publish(
@@ -82,6 +82,7 @@ class AgentLoop:
             # [observe] append assistant content blocks to context
             # thinking blocks must come first and be preserved verbatim for extended thinking mode
             blocks: list[dict[str, object]] = list(response.thinking_blocks)
+            blocks.extend(response.provider_blocks)
             if finalization_turn:
                 final_text = response.text.strip() or (
                     "I reached the tool-step limit before completing the task. "
@@ -100,20 +101,30 @@ class AgentLoop:
             if response.text:
                 blocks.append({"type": "text", "text": response.text})
             for tc in response.tool_calls:
-                blocks.append(
-                    {"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.input}
-                )
+                blocks.append({"type": "tool_use", "id": tc.id, "name": tc.name, "input": tc.input})
             context.add_assistant_message(blocks)
 
             # [act] execute each requested tool; errors become tool results so loop continues
             if response.stop_reason == "tool_use":
                 for tc in response.tool_calls:
                     result = await invoke_tool(
-                        self._registry, tc, self._bus, context.run_id,
+                        self._registry,
+                        tc,
+                        self._bus,
+                        context.run_id,
                         permission_manager=self._permission_manager,
                         session_id=self._session_id,
                     )
                     context.add_tool_result(tc.id, result.content, is_error=result.is_error)
+                    if result.error_type == "execution_unavailable":
+                        context.result = result.content
+                        context.mark_failed("execution_unavailable")
+                        # Balance history without executing calls after a fatal backend error.
+                        for pending in response.tool_calls[response.tool_calls.index(tc) + 1 :]:
+                            context.add_tool_result(
+                                pending.id, "Not executed: sandbox unavailable.", is_error=True
+                            )
+                        break
             elif response.stop_reason == "max_tokens" and response.tool_calls:
                 # Output token limit hit mid-tool-call; input is incomplete.
                 # Add synthetic error results so the conversation stays balanced.

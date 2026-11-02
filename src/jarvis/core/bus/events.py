@@ -182,7 +182,7 @@ class PermissionDeniedEvent(BaseModel):
 
 class SubagentStartedEvent(BaseModel):
     type: Literal["subagent.started"] = "subagent.started"
-    run_id: str          # 子 agent run_id
+    run_id: str  # 子 agent run_id
     parent_run_id: str
     description: str
     ts: str
@@ -192,7 +192,7 @@ class SubagentFinishedEvent(BaseModel):
     type: Literal["subagent.finished"] = "subagent.finished"
     run_id: str
     parent_run_id: str
-    status: str          # "success" | "failed"
+    status: str  # "success" | "failed"
     ts: str
 
 
@@ -202,6 +202,35 @@ class SkillInvokedEvent(BaseModel):
     arguments: str
     run_id: str
     session_id: str | None = None
+    ts: str
+
+
+SandboxEventType = Literal[
+    "sandbox.starting",
+    "sandbox.created",
+    "sandbox.ready",
+    "sandbox.reused",
+    "sandbox.using",
+    "sandbox.released",
+    "sandbox.stopping",
+    "sandbox.destroyed",
+    "sandbox.failed",
+]
+
+
+class SandboxLifecycleEvent(BaseModel):
+    """Public sandbox metadata only; never credentials, file contents or HTTP bodies."""
+
+    type: SandboxEventType
+    backend: Literal["cubesandbox"] = "cubesandbox"
+    session_id: str | None = None
+    run_id: str | None = None
+    sandbox_id: str | None = None
+    operation: Literal["prepare", "execute", "export", "release", "destroy"]
+    tool_name: str | None = None
+    reason: str | None = None
+    elapsed_ms: int = 0
+    workspace: Literal["/workspace/project"] = "/workspace/project"
     ts: str
 
 
@@ -230,6 +259,7 @@ Event = Annotated[
     | PermissionDeniedEvent
     | SubagentStartedEvent
     | SubagentFinishedEvent
-    | SkillInvokedEvent,
+    | SkillInvokedEvent
+    | SandboxLifecycleEvent,
     Discriminator("type"),
 ]

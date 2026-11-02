@@ -241,6 +241,48 @@ tool_result_keep = 4000
 
 API Key 不放在 TOML 中，仍然放在 `$HOME\.jarvis\.env`。
 
+### 4. 添加 GPT Responses 中转模型
+
+Jarvis 支持 OpenAI Responses 协议，可与 DeepSeek 同时配置。在全局
+`~/.jarvis/config.toml` 中加入命名模型，便可在各个项目中使用；只供某个项目使用的
+模型可以放在该项目的 `.jarvis/config.toml` 中：
+
+```toml
+[llm.models.CCCX-Joe]
+provider = "openai"
+model = "gpt-6.1-sol"
+display_name = "6.1 Sol"
+base_url = "https://hk.testvideo.site/v1"
+reasoning_effort = "xhigh"
+store = false
+api_key_env = "CCCX_JOE_API_KEY"
+```
+
+在项目 `.env` 或全局 `~/.jarvis/.env` 中设置 `CCCX_JOE_API_KEY=中转服务密钥`。
+也可以在该模型配置中显式加入 `api_key_file = "~/.codex/auth.json"`，读取已有认证
+文件的 `OPENAI_API_KEY` 字段；环境变量密钥优先。认证文件只在配置后读取。
+
+在 TUI 输入：
+
+```text
+/model                 # 打开模型菜单：↑↓ 选择、Enter 确认、Esc 取消
+/model CCCX-Joe        # 切换当前会话到 gpt-6.1-sol
+/model default         # 切回默认模型，例如 DeepSeek
+```
+
+模型选择按会话保存，恢复历史时会继续使用所选模型。切换只能在当前任务完成后进行，
+也会应用到该会话的后续子 Agent 和上下文压缩。Responses 请求发送 `store=false`，
+工具续接和恢复使用本地保存的历史与加密推理状态；Jarvis 的本地会话仍正常保存。
+
+`context_window` 可按服务实际限制配置，仅用于上下文占用估算。中转支持哪些模型及
+推理档位以服务实际行为为准。Codex 配置中的 `notify`、Windows sandbox、MCP 和
+桌面插件属于 Codex 运行环境，不作为 Jarvis 模型配置导入。
+
+菜单条目来自 `[llm.models.别名]`，可为中转实际支持的每个模型添加一段配置，
+用 `display_name` 设置菜单名称。打开 `/model` 或按名称切换时会重新读取命名模型配置，
+新增模型无需重启 Core。默认模型及其他运行配置修改后，仍需重启对应目录的 Core
+（`jarvis core stop` 后重新运行 `jarvis`）。更新 Jarvis 代码后也需重启 Core 一次。
+
 ## 四、在任意目录启动
 
 假设要分析的项目位于：
@@ -336,6 +378,9 @@ jarvis --replay <run-id>      # 查看历史运行事件
 使用 `↑` / `↓` 选择、`Enter` 恢复、`Esc` 退出；也可以明确选择“新建会话”。正在运行的会话需要
 等待本轮结束才能恢复。每个项目的历史独立存放在 `.jarvis/sessions/`。
 
+聊天中也可以输入 `/resume` 打开同一历史选择器，或输入 `/resume sess-xxx`
+直接恢复指定会话。取消选择或恢复失败时保留当前聊天；任务执行期间不能切换。
+
 恢复会加载已保存的对话；下一次输入会沿用这些上下文和 Notes。已压缩的会话加载
 压缩后的摘要与后续消息。恢复完成后停在输入框，权限模式重新设为 Ask。
 恢复本身不会请求模型，也不会自动重跑工具、后台任务或旧审批。
@@ -384,7 +429,7 @@ jarvis chat
 | 复制最近一条回答 | `Ctrl+Shift+C` 或 `Alt+C` |
 | 鼠标复制 | 长按拖动选择后使用终端复制 |
 | 退出 TUI | `Ctrl+Q` |
-| 选择历史会话 | 启动时使用 `jarvis --resume`，再按 `↑` / `↓`、`Enter` |
+| 选择历史会话 | 聊天中输入 `/resume`，或启动时使用 `jarvis --resume` |
 | 退出历史选择器 | `Esc` |
 | 手动压缩当前会话 | 输入 `/compact` |
 
@@ -427,8 +472,10 @@ C:\Users\<用户名>\.jarvis\context.md
 同名 Skill 按以下优先级解析：
 
 ```text
-项目 Skill
-  -> 用户全局 Skill
+项目 .jarvis/skills
+  -> 项目 .agents/skills
+  -> 用户 ~/.jarvis/skills
+  -> 用户 ~/.agents/skills
   -> Jarvis 内建 Skill
 ```
 
@@ -436,15 +483,20 @@ C:\Users\<用户名>\.jarvis\context.md
 
 ```text
 <workspace>\.jarvis\skills\
+<workspace>\.agents\skills\
 C:\Users\<用户名>\.jarvis\skills\
+C:\Users\<用户名>\.agents\skills\
 Jarvis 安装包中的 src\jarvis\core\skills\builtin\
 ```
 
-支持两种文件结构：
+支持 [Agent Skills 标准](https://agentskills.io/specification) 的目录结构，
+并兼容原有 `.jarvis/skills/*.md`：
 
 ```text
 .jarvis\skills\review.md
 .jarvis\skills\review\SKILL.md
+.agents\skills\explain\SKILL.md
+.agents\skills\explain\references\guide.md
 ```
 
 最小 Skill 示例：
@@ -453,10 +505,9 @@ Jarvis 安装包中的 src\jarvis\core\skills\builtin\
 ---
 name: explain
 description: 解释指定代码，并给出调用链和风险点
-allowed_tools:
-  - project_map
-  - search_files
-  - read_file
+license: MIT
+metadata:
+  author: my-team
 ---
 
 请分析 $ARGUMENTS。
@@ -467,7 +518,7 @@ allowed_tools:
 保存为：
 
 ```text
-<workspace>\.jarvis\skills\explain.md
+<workspace>\.agents\skills\explain\SKILL.md
 ```
 
 在 TUI 中输入：
@@ -475,6 +526,25 @@ allowed_tools:
 ```text
 /explain src/jarvis/core/loop.py
 ```
+
+标准字段 `name`、`description`、`license`、`compatibility`、`metadata`、
+`allowed-tools` 使用安全 YAML 解析，支持多行文本和引号。Skill 激活时附带绝对根目录，
+引用资源按需读取；兼容没有 `$ARGUMENTS` 的第三方 Skill。标准实验字段
+`allowed-tools` 会保留并提供给模型，执行仍遵循 Jarvis 权限策略；旧 `allowed_tools`
+继续限制工具白名单。
+
+普通任务中模型可调用 `activate_skill` 加载相关 Skill，工具目录仅包含名称和描述；
+输入 `/` 则可手动筛选和调用。列表每次打开时刷新，一屏显示最多 8 条并支持上下导航。
+
+本仓库附带 [30 个编码 Skill](.agents/skills/README.md)，来源固定到上游提交，
+包含原始资源、MIT 许可证和哈希锁文件。当前项目直接可用；安装到所有项目共享的标准目录：
+
+```powershell
+uv run python scripts/install_coding_skills.py
+uv run python scripts/install_coding_skills.py --check
+```
+
+安装器校验完整性、跳过相同版本并拒绝覆盖已修改 Skill。
 
 ### Agent Profiles
 
@@ -692,6 +762,7 @@ uv run pytest tests/unit -q
 | 源码阅读与学习资料总览 | [学习资料索引](studydocs/README.md) |
 | 七天源码阅读路线 | [源码阅读与面试指南](studydocs/CODE_READING_INTERVIEW_GUIDE.md) |
 | Skills 配置与调用 | [Skills 使用指南](studydocs/SKILLS_GUIDE.md) |
+| CubeSandbox 执行后端、项目副本与回传 | [CubeSandbox 接入说明](studydocs/CUBESANDBOX.md) |
 | 项目面试复习与详细追问 | [逐词追问与答案手册](studydocs/JARVIS_逐词追问与答案手册.md) |
 
 ## License

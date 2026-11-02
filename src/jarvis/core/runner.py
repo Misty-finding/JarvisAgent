@@ -13,6 +13,9 @@ from jarvis.core.config import JarvisConfig
 from jarvis.core.context import ExecutionContext
 from jarvis.core.events.bus import EventBus, EventHandler
 from jarvis.core.events.writer import EventWriter
+from jarvis.core.execution.base import BackendTool, ExecutionBackend, ExecutionUnavailable
+from jarvis.core.execution.cube import CubeBackend
+from jarvis.core.execution.locking import execution_lock
 from jarvis.core.llm.base import LLMProvider
 from jarvis.core.llm.provider import create_llm_provider
 from jarvis.core.loop import AgentLoop
@@ -22,6 +25,8 @@ from jarvis.core.permissions.manager import PermissionManager
 from jarvis.core.runs import RUNS_DIR, new_run_id
 from jarvis.core.session.model import Session
 from jarvis.core.session.store import SessionPersistenceError, SessionStore
+from jarvis.core.skills.loader import SkillLoader
+from jarvis.core.skills.tool import ActivateSkillTool
 from jarvis.core.subagent.registry import BackgroundTaskRegistry
 from jarvis.core.subagent.tool import AgentResultTool, SpawnAgentTool
 from jarvis.core.task.manager import TaskManager
@@ -92,6 +97,7 @@ class AgentRunner:
         child_runs_dir: Path | None = None,
         session_id: str = "",
         tool_whitelist: list[str] | None = None,
+        backend: ExecutionBackend | None = None,
     ) -> ToolRegistry:
         allowed: set[str] | None = set(tool_whitelist) if tool_whitelist else None
 
@@ -108,7 +114,7 @@ class AgentRunner:
             WriteFileTool(),
         ]:
             if _ok(t.name):
-                registry.register(t)
+                registry.register(BackendTool(t, backend, run_id=run_id) if backend else t)
         for t in [
             TaskCreateTool(task_manager),
             TaskUpdateTool(task_manager),
@@ -117,6 +123,15 @@ class AgentRunner:
         ]:
             if _ok(t.name):
                 registry.register(t)
+        if _ok("activate_skill"):
+            skill_tool = ActivateSkillTool(
+                SkillLoader(self._config.workspace),
+                bus or EventBus(),
+                run_id or "",
+                session_id,
+            )
+            if skill_tool.available:
+                registry.register(skill_tool)
         if session is not None and store is not None and run_id is not None:
             note_tool = NoteSaveTool(store, session.id, run_id)
             if _ok(note_tool.name):
@@ -136,11 +151,12 @@ class AgentRunner:
                         session_id=session_id,
                         depth=0,
                         workspace=self._config.workspace,
+                        backend=backend,
                     )
                 )
             if _ok("agent_result"):
                 registry.register(AgentResultTool(self._task_registry))
-        if self._mcp_manager is not None:
+        if self._mcp_manager is not None and backend is None:
             for mcp_tool in self._mcp_manager.get_tools():
                 if _ok(mcp_tool.name):
                     registry.register(mcp_tool)
@@ -178,6 +194,8 @@ class AgentRunner:
         task_manager = TaskManager(run_path / ".tasks")
 
         bus = self._bus if self._bus is not None else EventBus()
+        if store is not None:
+            bus.subscribe(store.handle_sandbox_event)
         for h in self._extra_handlers:
             bus.subscribe(h)
 
@@ -210,13 +228,69 @@ class AgentRunner:
 
         async with EventWriter(run_path / "events.jsonl") as writer:
             writer.subscribe(bus)
-            await bus.publish(RunStartedEvent(
-                run_id=run_id, goal=goal, session_id=session.id if session else None, ts=_now()
-            ))
+            await bus.publish(
+                RunStartedEvent(
+                    run_id=run_id, goal=goal, session_id=session.id if session else None, ts=_now()
+                )
+            )
 
             cancelled = False
+            backend: CubeBackend | None = None
+            lease = None
             try:
-                provider: LLMProvider = self._provider or create_llm_provider(self._config.llm)
+                if (
+                    session is not None
+                    and session.execution_backend == "cubesandbox"
+                    and self._config.execution.backend != "cubesandbox"
+                ):
+                    raise ExecutionUnavailable(
+                        "This session belongs to CubeSandbox; local execution is forbidden."
+                    )
+                if self._config.execution.backend == "cubesandbox":
+                    state_dir = (
+                        store.session_dir(session.id) / "execution"
+                        if session is not None and store is not None
+                        else run_path / "execution"
+                    )
+                    pending_lease = execution_lock(state_dir)
+                    pending_lease.__enter__()
+                    lease = pending_lease
+                    if session is not None and store is not None:
+                        if session.sandbox_id and not (state_dir / "sandbox.json").exists():
+                            raise ExecutionUnavailable(
+                                "Sandbox mapping is missing; start a new session."
+                            )
+                        session.execution_backend = "cubesandbox"
+                        store.write_meta(session)
+                    try:
+                        backend = CubeBackend(
+                            self._config.execution,
+                            self._config.workspace,
+                            state_dir,
+                            private_paths=[run_path.parent, self._runs_dir],
+                            bus=bus,
+                            session_id=session.id if session else None,
+                            run_id=run_id,
+                        )
+                        await backend.prepare()
+                    except (OSError, ValueError) as exc:
+                        raise ExecutionUnavailable(
+                            "Sandbox initialization failed; check project copy and connection "
+                            "settings. "
+                            "Local execution is disabled."
+                        ) from exc
+                    context.execution_runtime = backend.runtime_description
+                    if session is not None and store is not None:
+                        session.execution_backend = "cubesandbox"
+                        session.sandbox_id = backend.sandbox_id
+                        store.write_meta(session)
+                if session is not None and session.model_alias != "default":
+                    provider = self._provider or create_llm_provider(
+                        self._config.llm,
+                        session.model_alias,
+                    )
+                else:
+                    provider = self._provider or create_llm_provider(self._config.llm)
                 if self._trace is not None:
                     provider = TracingProvider(
                         provider,
@@ -239,6 +313,7 @@ class AgentRunner:
                     child_runs_dir=child_runs_dir,
                     session_id=session_id_str,
                     tool_whitelist=tool_whitelist,
+                    backend=backend,
                 )
                 session_dir = (
                     store.session_dir(session.id)
@@ -247,7 +322,9 @@ class AgentRunner:
                 )
                 compactor = Compactor(bus, session_dir, session_id_str)
                 loop = AgentLoop(
-                    provider, registry, bus,
+                    provider,
+                    registry,
+                    bus,
                     permission_manager=self._permission_manager,
                     compactor=compactor,
                     compact_threshold=self._config.compaction.auto_threshold,
@@ -258,6 +335,13 @@ class AgentRunner:
                 cancelled = True
                 if not context.is_done():
                     context.mark_failed("cancelled")
+                if backend is not None:
+                    await asyncio.shield(
+                        asyncio.gather(backend.destroy(reason="cancelled"), return_exceptions=True)
+                    )
+            except ExecutionUnavailable as exc:
+                context.result = str(exc)
+                context.mark_failed("execution_unavailable")
             except SessionPersistenceError:
                 logging.getLogger(__name__).exception("session history could not be saved")
                 context.mark_failed("storage_error")
@@ -267,6 +351,27 @@ class AgentRunner:
                 )
                 if not context.is_done():
                     context.mark_failed("llm_error")
+
+            finally:
+                # A run owns its child tasks; do not leave background workers after cancellation.
+                tasks = [
+                    task
+                    for task, _ctx in self._task_registry.all()
+                    if not task.done() and (backend is not None or cancelled)
+                ]
+                for task in tasks:
+                    task.cancel()
+                if tasks:
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                try:
+                    if backend is not None:
+                        await backend.release()
+                except SessionPersistenceError:
+                    context.mark_failed("storage_error")
+                    logging.getLogger(__name__).exception("sandbox lifecycle could not be saved")
+                finally:
+                    if lease is not None:
+                        lease.__exit__(None, None, None)
 
             await bus.publish(
                 RunFinishedEvent(

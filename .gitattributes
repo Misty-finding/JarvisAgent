@@ -1,0 +1,3 @@
+
+# Skill integrity hashes cover exact upstream bytes, including line endings.
+/.agents/skills/** -text

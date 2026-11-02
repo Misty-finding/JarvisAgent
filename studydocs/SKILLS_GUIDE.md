@@ -1,231 +1,118 @@
 # Jarvis Skills 使用与扩展指南
 
-## 1. 输入 `/` 时发生了什么
+## 标准格式
 
-TUI 输入框检测到 `/` 前缀后，会构造一个绑定当前 workspace 的 `SkillLoader`，
-读取所有可用 Skill 的名称和 description，然后把它们显示在补全列表中。
-
-这里只是显示候选项，不会因为输入 `/` 就执行 Skill。只有发送类似下面的消息后，
-Core 才会真正解析并执行：
+Jarvis 支持 [Agent Skills](https://agentskills.io/specification) 的 YAML frontmatter、
+Markdown 正文和完整资源目录。推荐结构：
 
 ```text
-/review src/jarvis
-/summarize
-/my-skill 参数内容
+.agents/skills/my-skill/
+  SKILL.md
+  references/guide.md
+  scripts/check.py
+  assets/template.json
 ```
 
-## 2. Skill 搜索位置和优先级
-
-Jarvis 会按照下面的优先级解析同名 Skill：
-
-```text
-项目特定 Skill
-    ↓
-用户通用 Skill
-    ↓
-Jarvis 内建 Skill
-```
-
-实际路径分别是：
-
-```text
-目标项目/.jarvis/skills/
-C:\Users\23148\.jarvis\skills\
-Jarvis 内建目录
-```
-
-项目目录不是 Jarvis 安装目录，而是你执行 `jarvis` 时所在的目标项目目录。
-例如从 `D:\projects\demo` 启动：
-
-```powershell
-cd D:\projects\demo
-jarvis
-```
-
-项目 Skill 就从下面的位置读取：
-
-```text
-D:\projects\demo\.jarvis\skills\
-```
-
-即使 Core 由 Jarvis 在后台启动，SkillLoader 也会使用这个 workspace，
-不会因为 daemon 的启动方式改变而跑去错误目录搜索。
-
-## 3. Jarvis 内建 Skills 是什么
-
-Jarvis 内建 Skills 是随 Jarvis 源码或安装包一起提供的默认 Skill，位于源码中的：
-
-```text
-src/jarvis/core/skills/builtin/
-```
-
-目前包括：
-
-```text
-init.md
-review.md
-summarize.md
-orchestrate.md
-```
-
-它们的作用是让 Jarvis 开箱即用，例如：
-
-```text
-/init
-/review
-/summarize
-/orchestrate
-```
-
-内建 Skill 属于产品默认能力，升级 Jarvis 时可能随代码一起变化。
-通常不建议直接修改内建文件；如果想定制同名 Skill，应该在用户目录或项目目录
-创建同名文件，用更高优先级覆盖默认版本。
-
-## 4. 通用 Skill
-
-通用 Skill 放在：
-
-```text
-C:\Users\23148\.jarvis\skills\
-```
-
-它会对所有项目生效，适合放跨项目通用的工作流，例如：
-
-```text
-C:\Users\23148\.jarvis\skills\python-review.md
-C:\Users\23148\.jarvis\skills\release-check\SKILL.md
-```
-
-### 4.1 扁平文件格式
-
-创建 `C:\Users\23148\.jarvis\skills\python-review.md`：
+`SKILL.md` 示例：
 
 ```markdown
 ---
-name: python-review
-description: 检查 Python 代码质量、测试覆盖率和常见工程问题
-allowed_tools:
-  - project_map
-  - search_files
-  - read_file
-  - list_dir
+name: my-skill
+description: 检查 Python 异步代码的取消、异常传播和资源释放。用于 asyncio 审查。
+license: MIT
+compatibility: Requires Python 3.12
+metadata:
+  author: my-team
+  version: "1.0"
+allowed-tools: Read Grep
 ---
 
-请审查当前 Python 项目：
-
-1. 先使用 project_map 了解项目结构。
-2. 再使用 search_files 定位入口、配置和测试。
-3. 重点检查异常处理、类型标注、异步边界和测试覆盖率。
-4. 最后按严重程度输出问题和建议。
-
-用户补充要求：
-$ARGUMENTS
+先阅读 references/guide.md，再检查用户指定代码并运行必要验证。
 ```
 
-重启 TUI，或重新打开 `/` 补全列表后，就会看到：
+目录式标准 Skill 要求 `name` 和目录名一致，使用 1–64 位小写字母、数字及单个连字符；
+`description` 非空且最多 1024 字符。`compatibility` 最多 500 字符；`metadata` 是字符串映射。
+完整 YAML 解析支持引号、折叠和保留换行的块标量、嵌套扩展字段；未知字段保存但不自动执行。
+格式错误的 Skill 会被跳过并记入 Core 日志，其他 Skill 继续可用。
+
+## 发现与覆盖
+
+同名 Skill 的优先级从高到低：
+
+1. `<workspace>/.jarvis/skills/`
+2. `<workspace>/.agents/skills/`
+3. `~/.jarvis/skills/`
+4. `~/.agents/skills/`
+5. Jarvis 安装包内的 `src/jarvis/core/skills/builtin/`
+
+项目范围高于用户范围，同范围 Jarvis 专用目录高于通用目录。
+项目目录绑定当前工作区，不受后台 Core 的启动目录影响。
+`.agents/skills/` 只发现子目录内的 `SKILL.md`，忽略 README 和锁文件。
+
+保留旧 `.jarvis/skills/name.md` 和 `.jarvis/skills/name/SKILL.md`。
+旧扁平文件可省略 frontmatter，旧 `allowed_tools` 列表继续作为工具白名单。
+标准目录式文件要求有效 frontmatter。
+
+## 激活与渐进加载
+
+TUI 输入 `/` 时显示名称和描述，可以继续输入名称片段筛选。
+上下键导航，Tab/Enter 补全，输入参数后发送：
 
 ```text
-/python-review
+/python-pro 检查 src/jarvis 的异步实现
+/code-reviewer 审查当前 Git diff
+/springboot-tdd 给订单去重逻辑补回归测试
 ```
 
-调用示例：
+补全最多显示 8 条，光标移动时滚动并显示总数；每次重新打开补全时刷新目录。
 
-```text
-/python-review src/jarvis
-```
+普通文本任务也可使用 Skill：`activate_skill` 的工具说明包含可用名称和描述，
+当前模型根据任务选择并调用，工具返回完整正文。没有将全部 Skill 正文塞入上下文。
+这是当前模型的选择能力，尚未接入 Jev。
 
-### 4.2 目录式格式
+旧 `allowed_tools` 限制型 Skill 仅通过斜杠调用，以维持原有工具限制语义。
+扩展 `disable-model-invocation: true` 可以将 Skill 从模型目录中隐藏，仍允许用户手动调用。
 
-复杂 Skill 可以使用目录：
+## 引用资源和宿主适配
 
-```text
-C:\Users\23148\.jarvis\skills\release-check\SKILL.md
-```
+两种激活方式都附带 Skill 的绝对根目录、兼容要求和资源路径索引。
+`references/`、`scripts/`、`assets/` 的内容不会被提前读取。
+相对路径以 Skill 根目录为基准，调用 `read_file` 时使用完整绝对路径。
+脚本可通过 `bash` 调用；项目构建仍在项目目录运行，读取 Skill 不会自动执行脚本。
 
-目录名默认就是 Skill 名，也可以在 frontmatter 中用 `name:` 明确指定。
+第三方 Skill 不必包含 Jarvis 旧 `$ARGUMENTS` 占位符。
+调用参数会单独注入，旧占位符仍支持替换。
+Jarvis 基础运行规则、项目上下文和用户要求继续生效。
 
-## 5. 项目特定 Skill
+工具名称参考：
 
-项目特定 Skill 放在目标项目自己的：
+| 上游名称 | Jarvis 工具 |
+| --- | --- |
+| Read | read_file |
+| Grep / Glob | search_files |
+| Bash | bash，Windows 下为原生 PowerShell |
+| Write | write_file |
+| Edit | read_file 后 write_file |
+| Skill | activate_skill |
+| Task | spawn_agent |
 
-```text
-目标项目/.jarvis/skills/
-```
+此表是模型适配指导；只能调用当前实际暴露的工具，不会凭空创建第三方工具。
+标准实验字段 `allowed-tools` 表示预批准工具声明，Jarvis 解析和保存该字段并提供给模型，
+但不根据第三方文件免除现有权限审批，也不实现 Claude 的命令模式授权语法。
+例如 `Bash(git:*)` 不会被扩张为任意 Shell 命令的自动授权。
 
-例如：
+## 首批 30 个编码 Skill
 
-```text
-D:\projects\demo\.jarvis\skills\demo-release.md
-```
-
-这种 Skill 只对 `D:\projects\demo` 生效，不会污染其他项目。
-适合放：
-
-- 当前项目的目录结构和模块约定
-- 项目专用测试、构建、部署流程
-- 当前团队的代码审查标准
-- 项目中的领域术语和业务规则
-
-项目 Skill 可以覆盖同名通用 Skill。例如全局有：
-
-```text
-C:\Users\23148\.jarvis\skills\review.md
-```
-
-项目中也有：
-
-```text
-D:\projects\demo\.jarvis\skills\review.md
-```
-
-在 `D:\projects\demo` 中执行 `/review` 时，Jarvis 会优先使用项目版本。
-
-## 6. `allowed_tools` 的作用
-
-`allowed_tools` 是这个 Skill 允许模型使用的工具白名单。例如：
-
-```yaml
-allowed_tools:
-  - project_map
-  - search_files
-  - read_file
-```
-
-如果不写 `allowed_tools` 或列表为空，当前实现不会因为 Skill 本身额外限制工具，
-模型仍使用当前 Agent 的完整工具注册表和权限策略。
-
-常用工具包括：
-
-```text
-project_map
-search_files
-read_file
-list_dir
-bash
-write_file
-task_create
-task_update
-```
-
-Skill 的工具白名单不是权限系统的替代品。文件写入、Shell 等高风险操作仍然受
-Jarvis 的 PermissionManager 和当前 ask/auto 模式控制。
-
-## 7. 添加 Skill 的最短流程
-
-### 通用 Skill
+源码仓库的 `.agents/skills/` 已包含 30 个，详细名单见该目录的 README。
+目录保留上游正文和完整资源，并附 MIT 许可证、固定提交、逐文件 SHA-256 锁定信息。
 
 ```powershell
-New-Item -ItemType Directory -Force "$HOME\.jarvis\skills" | Out-Null
-notepad "$HOME\.jarvis\skills\my-skill.md"
+uv run python scripts/install_coding_skills.py --check
+uv run python scripts/install_coding_skills.py
+uv run python scripts/install_coding_skills.py --dest 'D:\work\demo\.agents\skills'
 ```
 
-### 项目 Skill
-
-```powershell
-New-Item -ItemType Directory -Force ".jarvis\skills" | Out-Null
-notepad ".jarvis\skills\my-skill.md"
-```
-
-保存后重新打开 TUI，输入 `/` 即可查看候选项。
-`SkillLoader` 会读取 frontmatter 中的 `name` 和 `description`，正文会作为
-该 Skill 的专用系统指令，`$ARGUMENTS` 会被替换成 `/my-skill` 后面的参数。
+安装器从本仓库复制完整目录，无需联网，不安装上游仓库的 hooks、插件或其他配置。
+复制前校验锁文件；相同版本跳过，修改过的目标目录报冲突并保留原内容。
+全局安装后其他工作区也可发现，新增 Skill 在重新打开 `/` 列表或下次 run 时生效。
+升级 Jarvis 加载器代码则需要重启 Core 和 TUI。

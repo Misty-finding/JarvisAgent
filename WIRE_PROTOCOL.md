@@ -689,6 +689,7 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
 | `messages` | `array` | yes |
 | `run_ids` | `array` | yes |
 | `warnings` | `array` | no |
+| `model_alias` | `string` | no |
 
 ```json
 {
@@ -731,6 +732,11 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
       },
       "title": "Warnings",
       "type": "array"
+    },
+    "model_alias": {
+      "default": "default",
+      "title": "Model Alias",
+      "type": "string"
     }
   },
   "required": [
@@ -741,6 +747,178 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
     "run_ids"
   ],
   "title": "SessionResumeResult",
+  "type": "object"
+}
+```
+
+### ModelListCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "model.list",
+      "default": "model.list",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "ModelListCommand",
+  "type": "object"
+}
+```
+
+### ModelListResult
+
+| Field | Type | Required |
+|---|---|---|
+| `models` | `array` | yes |
+| `selected` | `string` | yes |
+
+```json
+{
+  "$defs": {
+    "ModelInfo": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "provider": {
+          "title": "Provider",
+          "type": "string"
+        },
+        "model": {
+          "title": "Model",
+          "type": "string"
+        },
+        "display_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Display Name"
+        },
+        "reasoning_effort": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reasoning Effort"
+        }
+      },
+      "required": [
+        "name",
+        "provider",
+        "model"
+      ],
+      "title": "ModelInfo",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "models": {
+      "items": {
+        "$ref": "#/$defs/ModelInfo"
+      },
+      "title": "Models",
+      "type": "array"
+    },
+    "selected": {
+      "title": "Selected",
+      "type": "string"
+    }
+  },
+  "required": [
+    "models",
+    "selected"
+  ],
+  "title": "ModelListResult",
+  "type": "object"
+}
+```
+
+### SessionSetModelCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+| `name` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.set_model",
+      "default": "session.set_model",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "name"
+  ],
+  "title": "SessionSetModelCommand",
+  "type": "object"
+}
+```
+
+### SessionSetModelResult
+
+| Field | Type | Required |
+|---|---|---|
+| `name` | `string` | yes |
+| `model` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "model": {
+      "title": "Model",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "model"
+  ],
+  "title": "SessionSetModelResult",
   "type": "object"
 }
 ```
@@ -797,6 +975,148 @@ All commands are sent as JSON-RPC 2.0 requests. The `type` field inside `params`
     "status"
   ],
   "title": "SessionCloseResult",
+  "type": "object"
+}
+```
+
+### SessionCancelCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `session_id` | `string` | yes |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "session.cancel",
+      "default": "session.cancel",
+      "title": "Type",
+      "type": "string"
+    },
+    "session_id": {
+      "title": "Session Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id"
+  ],
+  "title": "SessionCancelCommand",
+  "type": "object"
+}
+```
+
+### SessionCancelResult
+
+| Field | Type | Required |
+|---|---|---|
+| `cancelled` | `boolean` | yes |
+
+```json
+{
+  "properties": {
+    "cancelled": {
+      "title": "Cancelled",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "cancelled"
+  ],
+  "title": "SessionCancelResult",
+  "type": "object"
+}
+```
+
+### SandboxManageCommand
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | no |
+| `action` | `string` | yes |
+| `session_id` | `string` | yes |
+| `review_id` | `string | null` | no |
+| `confirm` | `string | null` | no |
+
+```json
+{
+  "properties": {
+    "type": {
+      "const": "sandbox.manage",
+      "default": "sandbox.manage",
+      "title": "Type",
+      "type": "string"
+    },
+    "action": {
+      "enum": [
+        "status",
+        "changes",
+        "apply",
+        "stop"
+      ],
+      "title": "Action",
+      "type": "string"
+    },
+    "session_id": {
+      "pattern": "^sess-[A-Za-z0-9_-]+$",
+      "title": "Session Id",
+      "type": "string"
+    },
+    "review_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Review Id"
+    },
+    "confirm": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Confirm"
+    }
+  },
+  "required": [
+    "action",
+    "session_id"
+  ],
+  "title": "SandboxManageCommand",
+  "type": "object"
+}
+```
+
+### SandboxManageResult
+
+| Field | Type | Required |
+|---|---|---|
+| `data` | `object` | yes |
+
+```json
+{
+  "properties": {
+    "data": {
+      "additionalProperties": true,
+      "title": "Data",
+      "type": "object"
+    }
+  },
+  "required": [
+    "data"
+  ],
+  "title": "SandboxManageResult",
   "type": "object"
 }
 ```
@@ -1926,6 +2246,148 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 }
 ```
 
+## Sandbox Lifecycle Events
+
+Subscribe to `sandbox.*` for creation, reuse, execution and destruction. Each event is also journaled in `thread.jsonl` as `kind=event`; these audit records are excluded from model messages. `sandbox.released` retains the instance; only `sandbox.destroyed` confirms deletion.
+
+### SandboxLifecycleEvent
+
+| Field | Type | Required |
+|---|---|---|
+| `type` | `string` | yes |
+| `backend` | `string` | no |
+| `session_id` | `string | null` | no |
+| `run_id` | `string | null` | no |
+| `sandbox_id` | `string | null` | no |
+| `operation` | `string` | yes |
+| `tool_name` | `string | null` | no |
+| `reason` | `string | null` | no |
+| `elapsed_ms` | `integer` | no |
+| `workspace` | `string` | no |
+| `ts` | `string` | yes |
+
+```json
+{
+  "description": "Public sandbox metadata only; never credentials, file contents or HTTP bodies.",
+  "properties": {
+    "type": {
+      "enum": [
+        "sandbox.starting",
+        "sandbox.created",
+        "sandbox.ready",
+        "sandbox.reused",
+        "sandbox.using",
+        "sandbox.released",
+        "sandbox.stopping",
+        "sandbox.destroyed",
+        "sandbox.failed"
+      ],
+      "title": "Type",
+      "type": "string"
+    },
+    "backend": {
+      "const": "cubesandbox",
+      "default": "cubesandbox",
+      "title": "Backend",
+      "type": "string"
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Session Id"
+    },
+    "run_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Run Id"
+    },
+    "sandbox_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Sandbox Id"
+    },
+    "operation": {
+      "enum": [
+        "prepare",
+        "execute",
+        "export",
+        "release",
+        "destroy"
+      ],
+      "title": "Operation",
+      "type": "string"
+    },
+    "tool_name": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tool Name"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Reason"
+    },
+    "elapsed_ms": {
+      "default": 0,
+      "title": "Elapsed Ms",
+      "type": "integer"
+    },
+    "workspace": {
+      "const": "/workspace/project",
+      "default": "/workspace/project",
+      "title": "Workspace",
+      "type": "string"
+    },
+    "ts": {
+      "title": "Ts",
+      "type": "string"
+    }
+  },
+  "required": [
+    "type",
+    "operation",
+    "ts"
+  ],
+  "title": "SandboxLifecycleEvent",
+  "type": "object"
+}
+```
+
 ## Error Codes
 
 | Code | Name | Meaning |
@@ -1940,3 +2402,5 @@ Events written to `runs/<run_id>/events.jsonl` and forwarded over IPC to subscri
 | -32011 | Session Closed | Resume a closed chat before sending messages |
 | -32012 | Session Busy | Session is still running |
 | -32013 | Session Invalid | Wrong workspace, unsupported metadata or corrupt history |
+| -32014 | Task Cancelled | Execution was cancelled |
+| -32015 | Sandbox Operation Failed | Sandbox management or reviewed apply failed |

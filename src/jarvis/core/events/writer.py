@@ -15,6 +15,7 @@ class EventWriter:
     def __init__(self, path: Path) -> None:
         self._path = path
         self._file: IO[str] | None = None
+        self._bus: EventBus | None = None
 
     # 打开事件文件（追加模式），供 async with 使用
     async def __aenter__(self) -> EventWriter:
@@ -24,6 +25,8 @@ class EventWriter:
 
     # 关闭事件文件
     async def __aexit__(self, *args: object) -> None:
+        if self._bus is not None:
+            self._bus.unsubscribe(self.handle)
         if self._file is not None:
             self._file.close()
             self._file = None
@@ -40,4 +43,5 @@ class EventWriter:
 
     # 将 handle 注册为 bus 的订阅者
     def subscribe(self, bus: EventBus) -> None:
+        self._bus = bus
         bus.subscribe(self.handle)

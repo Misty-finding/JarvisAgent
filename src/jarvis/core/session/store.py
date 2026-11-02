@@ -10,6 +10,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from pydantic import BaseModel, ValidationError
+
+from jarvis.core.bus.events import SandboxLifecycleEvent
 from jarvis.core.session.model import Session
 
 logger = logging.getLogger(__name__)
@@ -94,7 +97,9 @@ class SessionStore:
         if session.id != sid or session.schema_version != 1:
             raise ValueError("invalid or unsupported session metadata")
         if session.mode not in ("chat", "one_shot") or session.status not in (
-            "active", "waiting_for_input", "closed"
+            "active",
+            "waiting_for_input",
+            "closed",
         ):
             raise ValueError("invalid session state")
         if session.last_run_state not in (None, "running", "completed", "failed", "interrupted"):
@@ -128,6 +133,18 @@ class SessionStore:
         if run_id is not None:
             row["run_id"] = run_id
         self._append_row(sid, row)
+
+    async def handle_sandbox_event(self, event: BaseModel) -> None:
+        if isinstance(event, SandboxLifecycleEvent) and event.session_id:
+            self._append_row(
+                event.session_id,
+                {
+                    "kind": "event",
+                    "ts": event.ts,
+                    "run_id": event.run_id,
+                    "event": event.model_dump(mode="json"),
+                },
+            )
 
     # 逐条追加并关闭文件，补齐旧文件缺少的换行，写入失败向上阻止继续执行
     def _append_row(self, sid: str, row: dict[str, Any]) -> None:
@@ -165,12 +182,15 @@ class SessionStore:
         rows, _ = self._read_rows(sid)
         messages: list[dict[str, Any]] = []
         for row in rows:
+            if row.get("kind") == "event":
+                continue
             message = {"role": row["role"], "content": row["content"]}
             # 工具结果逐条落盘，加载时重新合并为合法的同轮结果消息
             content = message["content"]
             previous = messages[-1] if messages else None
             if (
-                previous is not None and message["role"] == previous["role"] == "user"
+                previous is not None
+                and message["role"] == previous["role"] == "user"
                 and self._is_tool_results(content)
                 and self._is_tool_results(previous["content"])
             ):
@@ -181,13 +201,18 @@ class SessionStore:
         if not truncate:
             return messages
         from jarvis.core.compact.budget import truncate_tool_results
+
         return truncate_tool_results(messages)
 
     # 识别纯工具结果消息，避免把普通用户输入误并入工具结果
     @staticmethod
     def _is_tool_results(content: Any) -> bool:
-        return isinstance(content, list) and bool(content) and all(
-            isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+        return (
+            isinstance(content, list)
+            and bool(content)
+            and all(
+                isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+            )
         )
 
     # 严格读取原始记录；仅允许恢复时截去末尾未写完的一行
@@ -209,15 +234,28 @@ class SessionStore:
                 if repair_tail and index == len(lines) - 1 and not line.endswith(b"\n"):
                     self._backup_thread(path)
                     _atomic_write(path, b"".join(lines[:index]).decode("utf-8"))
-                    warnings.append("上次退出时最后一条消息未保存完整，已保留有效历史并备份原文件。")
+                    warnings.append(
+                        "上次退出时最后一条消息未保存完整，已保留有效历史并备份原文件。"
+                    )
                     break
                 raise SessionHistoryError(f"会话历史第 {index + 1} 行损坏，未修改原文件。") from exc
+            if isinstance(row, dict) and row.get("kind") == "event":
+                try:
+                    event = SandboxLifecycleEvent.model_validate(row.get("event"))
+                    if event.session_id != sid:
+                        raise ValueError("Event belongs to another session")
+                except (ValidationError, ValueError) as exc:
+                    raise SessionHistoryError(f"会话历史第 {index + 1} 行事件格式不正确。") from exc
+                rows.append(row)
+                continue
             if (
-                not isinstance(row, dict) or row.get("role") not in ("user", "assistant")
+                not isinstance(row, dict)
+                or row.get("role") not in ("user", "assistant")
                 or not isinstance(row.get("content"), (str, list))
-                or (isinstance(row["content"], list) and not all(
-                    isinstance(block, dict) for block in row["content"]
-                ))
+                or (
+                    isinstance(row["content"], list)
+                    and not all(isinstance(block, dict) for block in row["content"])
+                )
             ):
                 raise SessionHistoryError(f"会话历史第 {index + 1} 行格式不正确。")
             rows.append(row)
@@ -234,6 +272,8 @@ class SessionStore:
         pending: dict[str, str | None] = {}
         seen: set[str] = set()
         for row in rows:
+            if row.get("kind") == "event":
+                continue
             content = row["content"]
             if pending and row["role"] == "assistant":
                 raise SessionHistoryError("未配对工具调用之后出现新的模型消息，无法安全恢复。")
@@ -256,29 +296,45 @@ class SessionStore:
                 elif pending and row["role"] == "user":
                     raise SessionHistoryError("未配对工具调用之间混入普通消息，无法安全恢复。")
         if pending:
-            self._append_row(sid, {
-                "ts": _now(), "role": "user", "run_id": interrupted_run_id,
-                "recovery": "interrupted_tools",
-                "content": [{
-                    "type": "tool_result", "tool_use_id": call_id,
-                    "content": INTERRUPTED_TOOL_MESSAGE, "is_error": True,
-                } for call_id in pending],
-            })
+            self._append_row(
+                sid,
+                {
+                    "ts": _now(),
+                    "role": "user",
+                    "run_id": interrupted_run_id,
+                    "recovery": "interrupted_tools",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": call_id,
+                            "content": INTERRUPTED_TOOL_MESSAGE,
+                            "is_error": True,
+                        }
+                        for call_id in pending
+                    ],
+                },
+            )
             warnings.append("上次有工具调用未记录结果，实际效果未知；继续前请先检查当前状态。")
         if interrupted_run_id and not any(
             row.get("recovery") == "interrupted_run" and row.get("run_id") == interrupted_run_id
             for row in rows
         ):
-            self._append_row(sid, {
-                "ts": _now(), "role": "user", "run_id": interrupted_run_id,
-                "recovery": "interrupted_run",
-                "content": (
-                    "[Session recovery] The previous run was interrupted. Background work and "
-                    "pending approvals were not resumed. Before continuing, inspect the current "
-                    "files, git diff, and external state; "
-                    "do not assume unfinished operations failed."
-                ),
-            })
+            self._append_row(
+                sid,
+                {
+                    "ts": _now(),
+                    "role": "user",
+                    "run_id": interrupted_run_id,
+                    "recovery": "interrupted_run",
+                    "content": (
+                        "[Session recovery] The previous run was interrupted. Background work and "
+                        "pending approvals were not resumed. Before continuing, inspect the "
+                        "current "
+                        "files, git diff, and external state; "
+                        "do not assume unfinished operations failed."
+                    ),
+                },
+            )
             warnings.append("上次执行已中断。恢复会话不会自动继续执行，请发送消息后继续。")
         return warnings
 
@@ -307,12 +363,19 @@ class SessionStore:
     # 将压缩后的消息对覆盖写入 thread.jsonl，原文件备份为 thread_<ts>.jsonl.bak
     def write_compacted(self, sid: str, messages: list[dict[str, Any]]) -> None:
         path = self.session_dir(sid) / "thread.jsonl"
+        rows, _warnings = self._read_rows(sid)
+        audit = [row for row in rows if row.get("kind") == "event"]
         if path.exists():
             self._backup_thread(path)
-        text = "".join(json.dumps(
-            {"ts": _now(), "role": msg["role"], "content": msg["content"]},
-            ensure_ascii=False,
-        ) + "\n" for msg in messages)
+        text = "".join(json.dumps(row, ensure_ascii=False) + "\n" for row in audit)
+        text += "".join(
+            json.dumps(
+                {"ts": _now(), "role": msg["role"], "content": msg["content"]},
+                ensure_ascii=False,
+            )
+            + "\n"
+            for msg in messages
+        )
         _atomic_write(path, text)
 
     # 读取 notes.md 全文，文件不存在时返回空字符串

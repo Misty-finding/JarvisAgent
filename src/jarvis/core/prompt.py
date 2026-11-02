@@ -5,10 +5,10 @@ import platform
 from pathlib import Path
 
 
-def build_runtime_system_prompt(max_steps: int) -> str:
+def build_runtime_system_prompt(max_steps: int, execution_runtime: str = "") -> str:
     system = platform.system() or os.name
     release = platform.release()
-    cwd = Path.cwd()
+    cwd = str(Path.cwd())
     is_windows = system.lower() == "windows"
     shell = "PowerShell" if is_windows else "POSIX shell"
 
@@ -29,6 +29,9 @@ def build_runtime_system_prompt(max_steps: int) -> str:
 - Prefer structured tools over shell pipelines when reading or searching a repository.
 """
     )
+    if execution_runtime:
+        system, release, cwd, shell = "Linux", "(CubeSandbox)", "/workspace/project", "Bash"
+        platform_rules = "\n" + execution_runtime + "\n"
 
     return f"""You are Jarvis, a persistent software-engineering agent.
 Complete the user's goal end to end and base conclusions on inspected evidence.
@@ -62,8 +65,7 @@ Complete the user's goal end to end and base conclusions on inspected evidence.
 
 def finalization_system_prompt(base: str) -> str:
     return (
-        base
-        + "\n\n## Finalization Turn\n"
+        base + "\n\n## Finalization Turn\n"
         "The tool-step budget is exhausted. You cannot call tools in this turn. "
         "Give the user the best useful answer supported by the evidence already collected. "
         "State what was verified, what remains uncertain, and what should be done next. "

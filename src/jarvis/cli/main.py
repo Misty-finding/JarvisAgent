@@ -13,6 +13,7 @@ from jarvis.cli.commands.core import (
 from jarvis.cli.commands.launch import cmd_launch
 from jarvis.cli.commands.ping import cmd_ping
 from jarvis.cli.commands.run import cmd_run
+from jarvis.cli.commands.sandbox import cmd_sandbox
 from jarvis.cli.commands.trace import cmd_trace
 from jarvis.cli.commands.version import cmd_version
 from jarvis.core.config import get_config
@@ -26,7 +27,10 @@ def main() -> None:
     session_args = parser.add_mutually_exclusive_group()
     session_args.add_argument("--replay", metavar="RUN_ID", help="Replay a past run in the TUI")
     session_args.add_argument(
-        "--resume", nargs="?", const="", metavar="SESSION_ID",
+        "--resume",
+        nargs="?",
+        const="",
+        metavar="SESSION_ID",
         help="Select a past session in the TUI, or resume the specified session",
     )
     subparsers = parser.add_subparsers(dest="command")
@@ -42,6 +46,14 @@ def main() -> None:
     core_sub.add_parser("start", help="Start the daemon in the background")
     core_sub.add_parser("stop", help="Stop the running daemon")
     core_sub.add_parser("status", help="Show daemon status")
+
+    sandbox_parser = subparsers.add_parser(
+        "sandbox", help="Review and apply sandbox project copies"
+    )
+    sandbox_parser.add_argument("sandbox_action", choices=["status", "changes", "apply", "stop"])
+    sandbox_parser.add_argument("--session", required=True, dest="sandbox_session")
+    sandbox_parser.add_argument("--review", dest="review_id")
+    sandbox_parser.add_argument("--confirm", help="Confirm the exact review ID to apply")
 
     trace_parser = subparsers.add_parser("trace", help="View system trace log")
     trace_parser.add_argument("run_id", nargs="?", default=None, help="Filter by run ID")
@@ -85,6 +97,8 @@ def main() -> None:
         else:
             core_parser.print_help()
             sys.exit(1)
+    elif args.command == "sandbox":
+        cmd_sandbox(config, args.sandbox_action, args.sandbox_session, args.review_id, args.confirm)
     elif args.command == "trace":
         config = resolve_runtime_config(config)
         cmd_trace(

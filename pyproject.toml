@@ -16,6 +16,7 @@ dependencies = [
     "anthropic>=0.25",     # Anthropic LLM SDK（流式 + prompt caching）
     "textual>=0.75",       # 终端 UI 框架（jarvis-tui）
     "httpx[socks]>=0.28.1",
+    "pyyaml>=6.0.2",       # Agent Skills 标准 YAML frontmatter
 ]
 
 # 安装后可在 PATH 中执行的入口：`jarvis` / `jarvis-core` / `jarvis-tui`
@@ -35,6 +36,7 @@ dev = [
     "mypy>=1.10",           # 静态类型检查
     "pytest>=8.0",          # 单元测试
     "pytest-asyncio>=0.23", # 异步测试支持
+    "types-PyYAML>=6.0.12", # YAML 解析器类型声明
 ]
 
 # ---- Ruff：统一代码风格 ----

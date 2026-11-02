@@ -16,6 +16,7 @@ from jarvis.core.bus.events import (
     ToolCallStartedEvent,
 )
 from jarvis.core.events.bus import EventBus
+from jarvis.core.execution.errors import ExecutionUnavailable
 from jarvis.core.llm.types import ToolCallBlock
 from jarvis.core.tools.base import ToolResult
 from jarvis.core.tools.errors import RateLimitedError
@@ -89,8 +90,12 @@ async def invoke_tool(
     tool = registry.get(tool_call.name)
     if tool is None:
         return await _fail(
-            bus, run_id, tool_call,
-            "runtime_error", f"unknown tool: {tool_call.name}", elapsed(),
+            bus,
+            run_id,
+            tool_call,
+            "runtime_error",
+            f"unknown tool: {tool_call.name}",
+            elapsed(),
         )
 
     if tool.params_model is not None:
@@ -98,11 +103,16 @@ async def invoke_tool(
             tool.params_model.model_validate(dict(tool_call.input))
         except ValidationError as exc:
             return await _fail(
-                bus, run_id, tool_call,
-                "schema_error", str(exc), elapsed(),
+                bus,
+                run_id,
+                tool_call,
+                "schema_error",
+                str(exc),
+                elapsed(),
             )
 
     if permission_manager is not None:
+
         async def _emit_permission(raw: dict[str, Any]) -> None:
             await bus.publish(PermissionRequestedEvent(**raw, run_id=run_id))
 
@@ -134,7 +144,9 @@ async def invoke_tool(
                     )
                 )
             return await _fail(
-                bus, run_id, tool_call,
+                bus,
+                run_id,
+                tool_call,
                 "permission_denied",
                 "Permission denied by user. You may not execute this command. "
                 "Try an alternative approach or ask the user what to do.",
@@ -146,9 +158,7 @@ async def invoke_tool(
         error_message: str | None = None
 
         try:
-            result = await asyncio.wait_for(
-                tool.invoke(dict(tool_call.input)), timeout=timeout
-            )
+            result = await asyncio.wait_for(tool.invoke(dict(tool_call.input)), timeout=timeout)
             ms = elapsed()
 
             if result.is_error:
@@ -167,13 +177,19 @@ async def invoke_tool(
                 )
                 return result
 
+        except ExecutionUnavailable as exc:
+            return await _fail(bus, run_id, tool_call, "execution_unavailable", str(exc), elapsed())
         except RateLimitedError as exc:
             error_class = "rate_limited"
             error_message = str(exc)
         except TimeoutError:
             return await _fail(
-                bus, run_id, tool_call,
-                "timeout", f"tool timed out after {timeout}s", elapsed(),
+                bus,
+                run_id,
+                tool_call,
+                "timeout",
+                f"tool timed out after {timeout}s",
+                elapsed(),
                 attempt=attempt,
             )
         except Exception as exc:
@@ -200,8 +216,12 @@ async def invoke_tool(
             continue
 
         return await _fail(
-            bus, run_id, tool_call,
-            error_class, error_message, ms,
+            bus,
+            run_id,
+            tool_call,
+            error_class,
+            error_message,
+            ms,
             attempt=attempt,
         )
 

@@ -9,6 +9,8 @@ from typing import Any
 
 from dotenv import dotenv_values
 
+from jarvis.core.execution.settings import ExecutionConfig, parse_execution
+
 _DEFAULT_HOST = "127.0.0.1"
 _DEFAULT_PORT = 7437
 _DEFAULT_LOG_LEVEL = "INFO"
@@ -34,12 +36,32 @@ class AgentConfig:
 
 
 @dataclass
+class ModelConfig:
+    provider: str
+    model: str
+    display_name: str | None = None
+    base_url: str | None = None
+    reasoning_effort: str | None = None
+    store: bool = False
+    context_window: int = 200_000
+    api_key_env: str = "OPENAI_API_KEY"
+    api_key_file: str | None = None
+    api_key: str | None = field(default=None, repr=False)
+
+
+@dataclass
 class LlmConfig:
     provider: str = _DEFAULT_LLM_PROVIDER
     default_model: str = _DEFAULT_MODEL
     base_url: str | None = None
     anthropic_api_key: str | None = field(default=None, repr=False)
     deepseek_api_key: str | None = field(default=None, repr=False)
+    openai_api_key: str | None = field(default=None, repr=False)
+    reasoning_effort: str | None = None
+    store: bool = False
+    context_window: int = 200_000
+    api_key_file: str | None = None
+    models: dict[str, ModelConfig] = field(default_factory=dict)
     router: str = "static"  # "static" | "rule_based" (S4) | "cost_budget" (S6)
 
 
@@ -60,18 +82,18 @@ class CompactionConfig:
     # context_pct 触发自动压缩的阈值（0 表示禁用，推荐用手动 /compact）
     auto_threshold: float = 0.0
     tool_result_limit: int = 8_000  # tool_result 截断触发字符数
-    tool_result_keep: int = 4_000   # 截断后保留的前缀字符数
+    tool_result_keep: int = 4_000  # 截断后保留的前缀字符数
 
 
 @dataclass
 class McpServerConfig:
     name: str
-    transport: str = "stdio"       # "stdio" | "tcp"
-    command: str = ""              # stdio 专用：可执行文件路径
+    transport: str = "stdio"  # "stdio" | "tcp"
+    command: str = ""  # stdio 专用：可执行文件路径
     args: list[str] = field(default_factory=list)
     env: dict[str, str] = field(default_factory=dict)
-    host: str = "localhost"        # tcp 专用
-    port: int = 3000               # tcp 专用
+    host: str = "localhost"  # tcp 专用
+    port: int = 3000  # tcp 专用
 
 
 @dataclass
@@ -91,6 +113,7 @@ class JarvisConfig:
     permission: PermissionConfig = field(default_factory=PermissionConfig)
     compaction: CompactionConfig = field(default_factory=CompactionConfig)
     mcp: McpConfig = field(default_factory=McpConfig)
+    execution: ExecutionConfig = field(default_factory=ExecutionConfig)
 
 
 # 构建并返回运行时配置：默认值 → 全局 TOML → 项目本地 TOML → .env → 系统环境变量（后者优先级最高）
@@ -107,6 +130,7 @@ def get_config() -> JarvisConfig:
         or project_env.get("JARVIS_CONFIG")
         or global_env.get("JARVIS_CONFIG")
     )
+
     def apply_config_file(config_path: Path) -> None:
         if config_path.exists():
             try:
@@ -127,6 +151,9 @@ def get_config() -> JarvisConfig:
         apply_config_file(local_config)
     _apply_env(config, project_env)
     _apply_env(config, system_env)
+    credentials = {**global_env, **project_env, **system_env}
+    for model in config.llm.models.values():
+        model.api_key = credentials.get(model.api_key_env)
     return config
 
 
@@ -141,10 +168,17 @@ def _apply_toml(config: JarvisConfig, data: dict[str, Any]) -> None:
         "permission",
         "compaction",
         "mcp",
+        "execution",
     }
     unknown = set(data.keys()) - known_sections
     if unknown:
         raise SystemExit(f"Unknown top-level config keys: {', '.join(sorted(unknown))}")
+
+    if "execution" in data:
+        try:
+            config.execution = parse_execution(data["execution"])
+        except ValueError as exc:
+            raise SystemExit(f"Config error: {exc}") from exc
 
     if "core" in data:
         core = data["core"]
@@ -200,6 +234,11 @@ def _apply_toml(config: JarvisConfig, data: dict[str, Any]) -> None:
             "default_model",
             "base_url",
             "router",
+            "reasoning_effort",
+            "store",
+            "context_window",
+            "api_key_file",
+            "models",
         }
         if unknown_llm:
             raise SystemExit(f"Unknown [llm] keys: {', '.join(sorted(unknown_llm))}")
@@ -223,6 +262,29 @@ def _apply_toml(config: JarvisConfig, data: dict[str, Any]) -> None:
             if not isinstance(val, str):
                 raise SystemExit("Config error: llm.router must be a string")
             config.llm.router = val
+        for key in ("reasoning_effort", "api_key_file"):
+            if key in llm:
+                val = llm[key]
+                if not isinstance(val, str):
+                    raise SystemExit(f"Config error: llm.{key} must be a string")
+                setattr(config.llm, key, val)
+        if "store" in llm:
+            if not isinstance(llm["store"], bool):
+                raise SystemExit("Config error: llm.store must be a boolean")
+            config.llm.store = llm["store"]
+        if "context_window" in llm:
+            window = llm["context_window"]
+            if type(window) is not int or window <= 0:
+                raise SystemExit("Config error: llm.context_window must be a positive integer")
+            config.llm.context_window = window
+        if "models" in llm:
+            profiles = llm["models"]
+            if not isinstance(profiles, dict):
+                raise SystemExit("Config error: llm.models must be a table")
+            for name, profile in profiles.items():
+                if name == "default":
+                    raise SystemExit("Config error: model name 'default' is reserved")
+                config.llm.models[name] = _parse_model(name, profile)
 
     if "trace" in data:
         trace = data["trace"]
@@ -341,8 +403,50 @@ def _apply_toml(config: JarvisConfig, data: dict[str, Any]) -> None:
             config.mcp.servers.append(s)
 
 
+# 校验命名模型配置，密钥只通过环境变量或显式认证文件解析
+def _parse_model(name: str, profile: Any) -> ModelConfig:
+    if not isinstance(profile, dict):
+        raise SystemExit(f"Config error: llm.models.{name} must be a table")
+    keys = {
+        "provider",
+        "model",
+        "base_url",
+        "reasoning_effort",
+        "store",
+        "context_window",
+        "api_key_env",
+        "api_key_file",
+        "display_name",
+    }
+    unknown = set(profile) - keys
+    if unknown:
+        raise SystemExit(f"Unknown model {name} keys: {', '.join(sorted(unknown))}")
+    for key in ("provider", "model"):
+        if not isinstance(profile.get(key), str) or not profile[key].strip():
+            raise SystemExit(f"Config error: model {name}.{key} must be a nonempty string")
+    for key in ("base_url", "reasoning_effort", "api_key_env", "api_key_file", "display_name"):
+        if key in profile and not isinstance(profile[key], str):
+            raise SystemExit(f"Config error: model {name}.{key} must be a string")
+    if "store" in profile and not isinstance(profile["store"], bool):
+        raise SystemExit(f"Config error: model {name}.store must be a boolean")
+    window = profile.get("context_window", 200_000)
+    if type(window) is not int or window <= 0:
+        raise SystemExit(f"Config error: model {name}.context_window must be a positive integer")
+    return ModelConfig(**profile)
+
+
 # 用 JARVIS_* 环境变量覆盖 config 中对应字段（若变量已设置）
 def _apply_env(config: JarvisConfig, env: Mapping[str, str | None]) -> None:
+    for name, attr in (
+        ("JARVIS_EXECUTION_BACKEND", "backend"),
+        ("JARVIS_CUBE_CONNECTION_FILE", "connection_file"),
+    ):
+        if env.get(name) is not None:
+            setattr(config.execution, attr, env[name])
+    try:
+        config.execution.validate()
+    except ValueError as exc:
+        raise SystemExit(f"Config error: {exc}") from exc
     host = env.get("JARVIS_HOST")
     if host is not None:
         config.host = host
@@ -400,6 +504,31 @@ def _apply_env(config: JarvisConfig, env: Mapping[str, str | None]) -> None:
     deepseek_api_key = env.get("DEEPSEEK_API_KEY")
     if deepseek_api_key is not None:
         config.llm.deepseek_api_key = deepseek_api_key
+
+    openai_api_key = env.get("OPENAI_API_KEY")
+    if openai_api_key is not None:
+        config.llm.openai_api_key = openai_api_key
+    for name, attr in (
+        ("JARVIS_LLM_REASONING_EFFORT", "reasoning_effort"),
+        ("JARVIS_LLM_API_KEY_FILE", "api_key_file"),
+    ):
+        value = env.get(name)
+        if value is not None:
+            setattr(config.llm, attr, value)
+    store = env.get("JARVIS_LLM_STORE")
+    if store is not None:
+        if store.lower() not in ("true", "false", "1", "0"):
+            raise SystemExit("Config error: JARVIS_LLM_STORE must be true or false")
+        config.llm.store = store.lower() in ("true", "1")
+    window_env = env.get("JARVIS_LLM_CONTEXT_WINDOW")
+    if window_env is not None:
+        try:
+            window_value = int(window_env)
+            if window_value <= 0:
+                raise ValueError
+        except ValueError:
+            raise SystemExit("Config error: JARVIS_LLM_CONTEXT_WINDOW must be a positive integer")
+        config.llm.context_window = window_value
 
     workspace = env.get("JARVIS_WORKSPACE_ROOT")
     if workspace is not None:

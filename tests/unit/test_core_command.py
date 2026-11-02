@@ -17,6 +17,7 @@ def test_running_pid_uses_cross_platform_process_probe(
 ) -> None:
     pid_file = tmp_path / "jarvis-core.pid"
     pid_file.write_text("1234")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(core, "_PID_FILE", pid_file)
     monkeypatch.setattr(core, "_process_exists", lambda pid: pid == 1234)
 
@@ -29,6 +30,7 @@ def test_running_pid_removes_stale_pid_file(
 ) -> None:
     pid_file = tmp_path / "jarvis-core.pid"
     pid_file.write_text("9999")
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(core, "_PID_FILE", pid_file)
     monkeypatch.setattr(core, "_process_exists", lambda pid: False)
 
