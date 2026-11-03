@@ -90,6 +90,9 @@ def resolve_sandbox(config: JarvisConfig, sandbox_id: str) -> tuple[JarvisConfig
     )
     if expected.resolve() != Path(entry["state_dir"]).resolve():
         raise ValueError("Invalid sandbox session mapping")
+    saved = load_object(expected / "sandbox.json")
+    if entry.get("destroyed") or (saved.get("sandbox") or {}).get("sandboxID") != sandbox_id:
+        raise ValueError("Sandbox was destroyed or replaced; refresh /sandbox")
     if workspace == config.workspace.resolve():
         return config, session_id
     try:
@@ -155,6 +158,7 @@ async def sandbox_command(
     confirm: str | None = None,
     bus: EventBus | None = None,
     discard_changes: bool = False,
+    expected_sandbox_id: str | None = None,
 ) -> dict[str, Any]:
     """User-only control surface. It is deliberately absent from the model's tools."""
     if config.execution.backend != "cubesandbox":
@@ -172,7 +176,8 @@ async def sandbox_command(
     async with EventWriter(state_dir / "events.jsonl") as writer:
         writer.subscribe(bus)
         return await _locked_command(
-            config, action, session_id, review_id, confirm, store, bus, discard_changes
+            config, action, session_id, review_id, confirm, store, bus, discard_changes,
+            expected_sandbox_id,
         )
 
 
@@ -185,11 +190,16 @@ async def _locked_command(
     store: SessionStore,
     bus: EventBus,
     discard_changes: bool,
+    expected_sandbox_id: str | None,
 ) -> dict[str, Any]:
     state_dir = store.session_dir(session_id) / "execution"
     with execution_lock(state_dir):
         if not (state_dir / "sandbox.json").exists():
             raise ValueError("Session has no sandbox mapping")
+        if expected_sandbox_id is not None:
+            saved = load_object(state_dir / "sandbox.json")
+            if (saved.get("sandbox") or {}).get("sandboxID") != expected_sandbox_id:
+                raise ValueError("Sandbox was replaced; refresh /sandbox")
         if action == "changes" and review_id:
             if not re.fullmatch(r"[0-9a-f]{32}", review_id):
                 raise ValueError("Invalid review ID")
@@ -211,6 +221,7 @@ async def _locked_command(
             if saved.get("api_url") != backend.api_url:
                 raise ValueError("Sandbox endpoint does not match session")
             backend._data = saved["sandbox"]
+            backend._destroyed = bool(saved.get("destroyed"))
             review = None
             if not discard_changes and not saved.get("destroyed"):
                 baseline = load_object(state_dir / "baseline.json")

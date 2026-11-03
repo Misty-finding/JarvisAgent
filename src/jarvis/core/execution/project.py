@@ -419,8 +419,15 @@ def apply_review(state_dir: Path, review_id: str, config: ExecutionConfig) -> di
         raise ValueError("Invalid review ID")
     review_path = state_dir / "reviews" / (review_id + ".json")
     review = load_object(review_path)
-    baseline = load_object(state_dir / "baseline.json")
-    if review["baseline_revision"] != baseline["revision"] or review.get("applied"):
+    baseline_path = state_dir / "baseline.json"
+    baseline = load_object(baseline_path)
+    revision = str(review["baseline_revision"])
+    if revision != baseline["revision"] and re.fullmatch(r"[0-9a-f]{32}", revision):
+        archived = state_dir / "baselines" / (revision + ".json")
+        if archived.exists():
+            baseline_path = archived
+            baseline = load_object(baseline_path)
+    if revision != baseline["revision"] or review.get("applied"):
         raise ValueError("Review is stale or already applied; generate a new review")
     root = Path(baseline["root"])
     if review["root"] != str(root):
@@ -493,7 +500,7 @@ def apply_review(state_dir: Path, review_id: str, config: ExecutionConfig) -> di
             before[change["path"]] = {**change["file"], "local_hash": change["content_hash"]}
     baseline["files"] = list(before.values())
     baseline["revision"] = uuid.uuid4().hex
-    save_private(state_dir / "baseline.json", baseline)
+    save_private(baseline_path, baseline)
     review["applied"] = True
     save_private(review_path, review)
     return {"applied": applied}

@@ -280,6 +280,7 @@ class AgentRunner:
                             bus=bus,
                             session_id=session.id if session else None,
                             run_id=run_id,
+                            recreate_destroyed=True,
                         )
                         self._active_backend = backend
                         await backend.prepare()

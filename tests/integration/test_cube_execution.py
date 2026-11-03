@@ -16,6 +16,7 @@ import pytest
 
 from jarvis.core.config import JarvisConfig
 from jarvis.core.events.bus import EventBus
+from jarvis.core.execution.base import ExecutionUnavailable
 from jarvis.core.execution.cube import CubeBackend
 from jarvis.core.execution.service import sandbox_command
 from jarvis.core.execution.settings import ExecutionConfig
@@ -82,6 +83,67 @@ class ScriptedModel:
                 )
             ],
         )
+
+
+async def test_destroy_then_continue_same_chat_creates_replacement(
+    cube_config: JarvisConfig,
+) -> None:
+    config = cube_config
+    bus = EventBus()
+    events: list[Any] = []
+
+    async def record(event: Any) -> None:
+        if event.type.startswith("sandbox."):
+            events.append(event)
+
+    bus.subscribe(record)
+    store = SessionStore(config.workspace / ".jarvis" / "sessions")
+    bus.subscribe(store.handle_sandbox_event)
+    permission = PermissionManager(policy_file=config.workspace / ".jarvis" / "permissions.json")
+    provider = ScriptedModel([
+        ("write_file", {"path": "calc.py", "content": "old sandbox edit\n"}),
+        ("bash", {"command": "touch old-sandbox-only"}),
+    ])
+    manager = SessionManager(
+        store,
+        lambda: AgentRunner(config, bus=bus, provider=provider, permission_manager=permission),
+        bus, workspace=config.workspace,
+    )
+    session = await manager.create("chat")
+    permission.set_session_mode(session.id, "auto")
+    try:
+        await manager.send_message(session.id, "make old sandbox changes")
+        assert session.last_run_state == "completed"
+        first_id = session.sandbox_id
+        destroyed = await sandbox_command(config, "destroy", session.id, bus=bus)
+        assert destroyed["destroyed"] == first_id and destroyed["review_id"]
+        # Management is read-only with respect to instance creation.
+        with pytest.raises(ExecutionUnavailable, match="mapping is invalid"):
+            await sandbox_command(config, "status", session.id, bus=bus)
+        provider.calls = iter([
+            ("bash", {"command": "test ! -e old-sandbox-only && grep 'return a - b' calc.py"}),
+            ("write_file", {"path": "replacement.py", "content": "print('new sandbox')\n"}),
+            ("bash", {"command": "python replacement.py"}),
+        ])
+        await manager.send_message(session.id, "continue after destruction")
+        assert session.last_run_state == "completed"
+        assert session.sandbox_id and session.sandbox_id != first_id
+        assert "previous sandbox" in provider.system
+        assert any(e.type == "sandbox.created" and e.sandbox_id == session.sandbox_id for e in events)
+        review = await sandbox_command(
+            config, "changes", session.id, review_id=destroyed["review_id"],
+        )
+        assert any(change["path"] == "calc.py" for change in review["changes"])
+        applied = await sandbox_command(
+            config, "apply", session.id,
+            review_id=review["id"], confirm=review["id"],
+        )
+        assert "calc.py" in applied["applied"]
+        assert (config.workspace / "calc.py").read_text() == "old sandbox edit\n"
+        assert not (config.workspace / "replacement.py").exists()
+    finally:
+        if session.sandbox_id:
+            await sandbox_command(config, "destroy", session.id, discard_changes=True, bus=bus)
 
 
 async def test_real_jarvis_loop_copy_reuse_review_apply(cube_config: JarvisConfig) -> None:

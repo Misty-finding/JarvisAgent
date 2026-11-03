@@ -258,6 +258,7 @@ class CoreApp:
                     confirm=cmd.confirm,
                     bus=self._bus,
                     discard_changes=cmd.discard_changes,
+                    expected_sandbox_id=cmd.sandbox_id,
                 )
             finally:
                 if foreign_store:

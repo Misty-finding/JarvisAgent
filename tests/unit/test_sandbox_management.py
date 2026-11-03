@@ -15,7 +15,13 @@ from jarvis.core.config import JarvisConfig, _apply_toml, get_config
 from jarvis.core.events.bus import EventBus
 from jarvis.core.execution.cube import CubeBackend
 from jarvis.core.execution.errors import ExecutionUnavailable
-from jarvis.core.execution.project import collect_project, load_object, save_private
+from jarvis.core.execution.project import (
+    apply_review,
+    collect_project,
+    load_object,
+    make_review,
+    save_private,
+)
 from jarvis.core.execution.service import list_sandboxes, resolve_sandbox, sandbox_command
 from jarvis.core.execution.settings import ExecutionConfig, parse_execution
 from jarvis.core.llm.types import LlmResponse, ToolCallBlock
@@ -62,6 +68,100 @@ def test_default_isolation_and_no_expiry() -> None:
             parse_execution({"sandbox_timeout": timeout})
     with pytest.raises(SystemExit, match="table"):
         _apply_toml(JarvisConfig(), {"execution": "local"})
+
+
+@pytest.mark.parametrize("local_conflict", [False, True])
+async def test_destroyed_session_recreates_and_keeps_old_reviews(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, local_conflict: bool,
+) -> None:
+    config = config_at(tmp_path)
+    _, state = mapped_session(config, "sess-recreate", "old-vm")
+    baseline = load_object(state / "baseline.json")
+    review = make_review(state, [{
+        "path": "code.txt", "content": base64.b64encode(b"old sandbox edit\n").decode(),
+        "executable": False,
+    }], config.execution)
+    old = CubeBackend(config.execution, config.workspace, state, session_id="sess-recreate")
+    old._data = load_object(state / "sandbox.json")["sandbox"]
+    monkeypatch.setattr(old, "_control", lambda *args, **kwargs: asyncio.sleep(0, result=None))
+    await old.destroy()
+    events: list[Any] = []
+    bus = EventBus()
+
+    async def record(event: Any) -> None:
+        events.append(event)
+
+    bus.subscribe(record)
+    imported = []
+
+    async def control(self: CubeBackend, method: str, path: str, **kwargs: Any) -> Any:
+        if method == "GET" and path == "/sandboxes":
+            return []
+        assert method == "POST" and path == "/sandboxes"
+        return {"sandboxID": "new-vm"}
+
+    async def worker(self: CubeBackend, action: str, params: Any, **kwargs: Any) -> Any:
+        if action == "initialize_execution":
+            return {"initialized": True}
+        if action == "import":
+            imported.extend(params["files"])
+            return {"imported": len(params["files"])}
+        return {"stopped": True}
+
+    monkeypatch.setattr(CubeBackend, "_control", control)
+    monkeypatch.setattr(CubeBackend, "_worker", worker)
+    backend = CubeBackend(config.execution, config.workspace, state, bus=bus,
+                          session_id="sess-recreate", recreate_destroyed=True)
+    await backend.prepare()
+    assert backend.sandbox_id == "new-vm"
+    assert base64.b64decode(imported[0]["content"]) == (config.workspace / "code.txt").read_bytes()
+    assert "previous sandbox" in backend.runtime_description
+    assert [e.type for e in events] == ["sandbox.starting", "sandbox.created", "sandbox.ready"]
+    assert events[0].reason == "user_recreated"
+    assert load_object(state / "baselines" / (baseline["revision"] + ".json")) == baseline
+    current = load_object(state / "baseline.json")
+    assert current["revision"] != baseline["revision"]
+    if local_conflict:
+        (config.workspace / "code.txt").write_text("user edit\n")
+        with pytest.raises(ValueError, match="conflict"):
+            apply_review(state, review["id"], config.execution)
+        assert (config.workspace / "code.txt").read_text() == "user edit\n"
+    else:
+        assert apply_review(state, review["id"], config.execution) == {"applied": ["code.txt"]}
+        assert (config.workspace / "code.txt").read_text() == "old sandbox edit\n"
+    assert load_object(state / "baseline.json") == current
+    with pytest.raises(ValueError, match="destroyed or replaced"):
+        resolve_sandbox(config, "old-vm")
+    with pytest.raises(ValueError, match="replaced"):
+        await sandbox_command(config, "destroy", "sess-recreate", discard_changes=True,
+                              expected_sandbox_id="old-vm")
+    assert not load_object(state / "sandbox.json")["destroyed"]
+    await backend.release()
+
+
+@pytest.mark.parametrize("state", ["destroyed", "invalidated", "missing", "unreachable"])
+async def test_management_and_unconfirmed_loss_never_recreate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, state: str,
+) -> None:
+    config = config_at(tmp_path)
+    _, directory = mapped_session(config, "sess-no-replace", "old-vm")
+    saved = load_object(directory / "sandbox.json")
+    saved["invalidated"] = state in ("destroyed", "invalidated")
+    saved["destroyed"] = state == "destroyed"
+    save_private(directory / "sandbox.json", saved)
+    called = []
+
+    async def control(self: CubeBackend, method: str, path: str, **kwargs: Any) -> Any:
+        called.append((method, path))
+        raise ExecutionUnavailable("instance missing or unreachable")
+
+    monkeypatch.setattr(CubeBackend, "_control", control)
+    backend = CubeBackend(config.execution, config.workspace, directory,
+                          recreate_destroyed=state != "destroyed")
+    with pytest.raises(ExecutionUnavailable):
+        await backend.prepare()
+    assert all(method == "GET" for method, _ in called)
+    assert load_object(directory / "sandbox.json") == saved
 
 
 def test_project_cannot_override_global_security_policy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

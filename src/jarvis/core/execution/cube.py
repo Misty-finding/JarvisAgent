@@ -30,7 +30,7 @@ from jarvis.core.tools.base import ToolResult
 
 
 class CubeBackend:
-    """One session, one MicroVM. All task operations use its envd API.
+    """At most one live MicroVM per session; task operations use its envd API.
 
     Network clients ignore host proxy variables. Authentication stays in HTTP
     headers and is never copied into the task's environment or workspace.
@@ -46,6 +46,7 @@ class CubeBackend:
         bus: EventBus | None = None,
         session_id: str | None = None,
         run_id: str | None = None,
+        recreate_destroyed: bool = False,
     ) -> None:
         config.validate()
         self.config = config
@@ -54,6 +55,8 @@ class CubeBackend:
         self._bus = bus or EventBus()
         self._session_id = session_id
         self._run_id = run_id
+        self._recreate_destroyed = recreate_destroyed
+        self._recreated_from: str | None = None
         self._destroy_lock = asyncio.Lock()
         self._cancel_lock = asyncio.Lock()
         self._execution_id = uuid.uuid4().hex
@@ -103,7 +106,7 @@ class CubeBackend:
 
     @property
     def runtime_description(self) -> str:
-        return (
+        description = (
             "Operating system: Linux (CubeSandbox MicroVM)\n"
             "Shell: /bin/bash --noprofile --norc\n"
             "Working directory: /workspace/project\n"
@@ -113,6 +116,14 @@ class CubeBackend:
             "Core credentials and session data are not in this workspace. "
             "On execution_unavailable stop the task; never attempt local execution."
         )
+        if self._recreated_from:
+            description += (
+                "\nThe user destroyed the previous sandbox. This is a replacement imported "
+                "from the local project, not the old sandbox's files or installed dependencies. "
+                "Chat history refers to an earlier environment; inspect current files before "
+                "continuing. Old saved reviews remain available for explicit user apply."
+            )
+        return description
 
     @property
     def sandbox_id(self) -> str | None:
@@ -170,13 +181,18 @@ class CubeBackend:
         )
 
     async def _prepare(self, started: float) -> None:
-        """Create once and persist immediately; a missing old instance is never replaced."""
+        """Reuse a live instance; replace confirmed destruction only on a new task."""
         state_path = self.state_dir / "sandbox.json"
         if state_path.exists():
             saved = load_object(state_path)
+            if saved.get("workspace") != str(self.workspace):
+                raise ExecutionUnavailable("Sandbox mapping belongs to another workspace")
+            if saved.get("destroyed") and self._recreate_destroyed:
+                self._archive_destroyed(saved)
+                await self._create(started)
+                return
             if (
-                saved.get("workspace") != str(self.workspace)
-                or saved.get("api_url") != self.api_url
+                saved.get("api_url") != self.api_url
                 or saved.get("proxy_url") != self.proxy_url
                 or saved.get("invalidated")
                 or saved.get("network_policy") != self._network_policy()
@@ -185,6 +201,7 @@ class CubeBackend:
                     "Sandbox mapping is invalid. Start a new Jarvis session."
                 )
             self._data = saved["sandbox"]
+            self._recreated_from = saved.get("recreated_from")
             # Restore durable state before the first await: a simultaneous cancellation
             # must preserve completed imports and terminate the old run, not just this one.
             self._import_complete = bool(saved.get("import_complete"))
@@ -210,7 +227,28 @@ class CubeBackend:
                 self._save(import_complete=True)
             await self._emit("sandbox.reused", "prepare", started=started)
             return
-        await self._emit("sandbox.starting", "prepare", reason="new_session")
+        await self._create(started)
+
+    def _archive_destroyed(self, saved: dict[str, Any]) -> None:
+        """Preserve review baselines before a replacement imports the local project."""
+        baseline_path = self.state_dir / "baseline.json"
+        if baseline_path.exists():
+            baseline = load_object(baseline_path)
+            revision = str(baseline["revision"])
+            if not re.fullmatch(r"[0-9a-f]{32}", revision):
+                raise ValueError("Invalid project baseline revision")
+            archived = self.state_dir / "baselines" / (revision + ".json")
+            if not archived.exists():
+                save_private(archived, baseline)
+        # Keep the confirmed destroyed mapping until creation is durably saved.
+        # Failure or cancellation before then can safely retry the replacement.
+        self._recreated_from = str(saved["sandbox"]["sandboxID"])
+
+    async def _create(self, started: float) -> None:
+        await self._emit(
+            "sandbox.starting", "prepare",
+            reason="user_recreated" if self._recreated_from else "new_session",
+        )
         if not self.template:
             raise ExecutionUnavailable("CubeSandbox template is not configured")
         # Collect the copy before creating a VM, so import failures cannot leak VMs.
@@ -342,6 +380,7 @@ class CubeBackend:
                 "active_execution_id": self._active_execution_id,
                 "cancel_unconfirmed": self._cancel_unconfirmed,
                 "destroyed": self._destroyed,
+                "recreated_from": self._recreated_from,
             },
         )
         if self._data and self._session_id:
