@@ -117,11 +117,12 @@ class JarvisConfig:
 
 
 # 构建并返回运行时配置：默认值 → 全局 TOML → 项目本地 TOML → .env → 系统环境变量（后者优先级最高）
-def get_config() -> JarvisConfig:
-    config = JarvisConfig()
+def get_config(workspace: Path | None = None) -> JarvisConfig:
+    project_root = workspace.resolve() if workspace is not None else Path.cwd().resolve()
+    config = JarvisConfig(workspace=project_root)
 
     global_env = dotenv_values(Path("~/.jarvis/.env").expanduser())
-    project_env = dotenv_values(Path(".env"))
+    project_env = dotenv_values(project_root / ".env")
     system_env: Mapping[str, str | None] = os.environ
 
     # 只有系统或用户全局配置可以选择安全策略文件。
@@ -173,7 +174,7 @@ def get_config() -> JarvisConfig:
     else:
         apply_config_file(Path(_DEFAULT_CONFIG_PATH).expanduser())
         _apply_env(config, global_env)
-        local_config = Path(".jarvis/config.toml")
+        local_config = project_root / ".jarvis/config.toml"
         apply_config_file(local_config, project=True)
     _apply_env(
         config,
@@ -189,6 +190,8 @@ def get_config() -> JarvisConfig:
         },
     )
     _apply_env(config, system_env)
+    if workspace is not None:
+        config.workspace = project_root
     credentials = {**global_env, **project_env, **system_env}
     for model in config.llm.models.values():
         model.api_key = credentials.get(model.api_key_env)

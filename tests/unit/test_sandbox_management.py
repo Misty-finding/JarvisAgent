@@ -16,7 +16,7 @@ from jarvis.core.events.bus import EventBus
 from jarvis.core.execution.cube import CubeBackend
 from jarvis.core.execution.errors import ExecutionUnavailable
 from jarvis.core.execution.project import collect_project, load_object, save_private
-from jarvis.core.execution.service import list_sandboxes, sandbox_command
+from jarvis.core.execution.service import list_sandboxes, resolve_sandbox, sandbox_command
 from jarvis.core.execution.settings import ExecutionConfig, parse_execution
 from jarvis.core.llm.types import LlmResponse, ToolCallBlock
 from jarvis.core.permissions.manager import PermissionManager
@@ -113,6 +113,36 @@ async def test_list_cross_project_current_first_and_no_credentials(tmp_path: Pat
     unknown = next(item for item in listing if item["sandbox_id"] == "unmanaged")
     assert unknown["workspace"] is None and not unknown["managed"]
     assert "secret" not in str(listing) and "private-token" not in str(listing)
+
+
+def test_foreign_management_uses_owner_exclusions_without_changing_process_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = config_at(tmp_path)
+    config.workspace.mkdir()
+    config.execution.exclude = ["code.txt"]
+    other = replace(config, workspace=tmp_path / "two")
+    _, state = mapped_session(other, "sess-owner", "vm-owner")
+    (other.workspace / ".jarvis" / "config.toml").write_text(
+        '[execution]\nexclude=["owner-cache/**"]\nbackend="local"\n'
+    )
+    home = tmp_path / "home"
+    (home / ".jarvis").mkdir(parents=True)
+    (home / ".jarvis" / "config.toml").write_text(
+        '[execution]\nexclude=["global-secret/**"]\n'
+    )
+    monkeypatch.chdir(config.workspace)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("JARVIS_WORKSPACE_ROOT", str(config.workspace))
+    monkeypatch.delenv("JARVIS_CONFIG", raising=False)
+    resolved, sid = resolve_sandbox(config, "vm-owner")
+    assert sid == "sess-owner" and resolved.workspace == other.workspace
+    assert resolved.execution.exclude == ["global-secret/**", "owner-cache/**"]
+    assert resolved.execution.backend == "cubesandbox"
+    assert Path.cwd() == config.workspace
+    assert resolved.execution.api_url == config.execution.api_url
+    assert state == other.workspace / ".jarvis" / "sessions" / sid / "execution"
 
 
 async def test_destroy_exports_before_delete_and_keeps_local_original(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -299,6 +329,64 @@ async def test_cancel_stops_remote_even_when_transport_swallows_cancellation(tmp
     assert session.last_run_state == "interrupted"
     state = load_object(store.session_dir(session.id) / "execution" / "sandbox.json")
     assert not state["destroyed"] and not state["invalidated"]
+
+
+@pytest.mark.parametrize("phase", ["connect", "cleanup", "initialize"])
+async def test_cancel_during_reuse_preserves_completed_import_and_stops_orphan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, phase: str,
+) -> None:
+    config = config_at(tmp_path)
+    _, state_dir = mapped_session(config, "sess-reuse", "vm-reuse")
+    saved = load_object(state_dir / "sandbox.json")
+    orphan_id = "a" * 32
+    saved["active_execution_id"] = orphan_id
+    save_private(state_dir / "sandbox.json", saved)
+    blocked = asyncio.Event()
+    stopped: list[str] = []
+    imports: list[str] = []
+    backend = CubeBackend(config.execution, config.workspace, state_dir, session_id="sess-reuse")
+
+    async def control(self: CubeBackend, method: str, path: str, **kwargs: Any) -> Any:
+        if phase == "connect" and method == "GET":
+            blocked.set()
+            await asyncio.Event().wait()
+        return {}
+
+    async def worker(self: CubeBackend, action: str, params: Any, **kwargs: Any) -> Any:
+        if action == "cancel_execution":
+            if phase == "cleanup" and not blocked.is_set():
+                blocked.set()
+                await asyncio.Event().wait()
+            stopped.append(kwargs.get("execution_id", self._execution_id))
+            return {"stopped": True}
+        if action == "initialize_execution":
+            if phase == "initialize" and not blocked.is_set():
+                blocked.set()
+                await asyncio.Event().wait()
+            return {"initialized": True}
+        if action == "import":
+            imports.append(action)
+            return {"imported": len(params["files"])}
+        return {"stopped": True}
+
+    monkeypatch.setattr(CubeBackend, "_control", control)
+    monkeypatch.setattr(CubeBackend, "_worker", worker)
+    preparing = asyncio.create_task(backend.prepare())
+    async with asyncio.timeout(5):
+        await blocked.wait()
+        preparing.cancel()
+        await asyncio.gather(preparing, return_exceptions=True)
+        await backend.cancel_run()
+    interrupted = load_object(state_dir / "sandbox.json")
+    assert interrupted["import_complete"], "Cancellation must not mark an existing workspace unimported"
+    assert orphan_id in stopped, "An old run may still be alive when reconnect is cancelled"
+    assert interrupted["active_execution_id"] is None
+    resumed = CubeBackend(config.execution, config.workspace, state_dir, session_id="sess-reuse")
+    # The blocking phase has already passed; resume must never replay the original baseline.
+    monkeypatch.setattr(resumed, "_control", lambda *args, **kwargs: asyncio.sleep(0, result={}))
+    await resumed.prepare()
+    assert not imports
+    await resumed.release()
 
 
 class PanelClient:

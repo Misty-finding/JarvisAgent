@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from jarvis.core.bus.events import SandboxLifecycleEvent
-from jarvis.core.config import JarvisConfig
+from jarvis.core.config import JarvisConfig, get_config
 from jarvis.core.events.bus import EventBus
 from jarvis.core.events.writer import EventWriter
 from jarvis.core.execution.catalog import SandboxCatalog
@@ -90,7 +90,23 @@ def resolve_sandbox(config: JarvisConfig, sandbox_id: str) -> tuple[JarvisConfig
     )
     if expected.resolve() != Path(entry["state_dir"]).resolve():
         raise ValueError("Invalid sandbox session mapping")
-    return replace(config, workspace=workspace), session_id
+    if workspace == config.workspace.resolve():
+        return config, session_id
+    try:
+        target = get_config(workspace).execution
+    except SystemExit as exc:
+        raise ValueError("Cannot read the sandbox owner's project configuration") from exc
+    # File selection belongs to the owner project. The caller's exclude rules must
+    # not silently remove another project's changes from its pre-destruction backup.
+    execution = replace(
+        config.execution,
+        exclude=target.exclude,
+        include_uncommitted=target.include_uncommitted,
+        max_files=min(config.execution.max_files, target.max_files),
+        max_file_bytes=min(config.execution.max_file_bytes, target.max_file_bytes),
+        max_total_bytes=min(config.execution.max_total_bytes, target.max_total_bytes),
+    )
+    return replace(config, workspace=workspace, execution=execution), session_id
 
 
 async def forward_sandbox(

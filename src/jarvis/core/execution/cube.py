@@ -59,6 +59,7 @@ class CubeBackend:
         self._execution_id = uuid.uuid4().hex
         self._active_execution_id: str | None = None
         self._cancelled = False
+        self._cancel_requested = False
         self._prepared = False
         self._import_complete = False
         self._cancel_unconfirmed = False
@@ -184,6 +185,11 @@ class CubeBackend:
                     "Sandbox mapping is invalid. Start a new Jarvis session."
                 )
             self._data = saved["sandbox"]
+            # Restore durable state before the first await: a simultaneous cancellation
+            # must preserve completed imports and terminate the old run, not just this one.
+            self._import_complete = bool(saved.get("import_complete"))
+            previous = saved.get("active_execution_id")
+            self._active_execution_id = str(previous) if previous else None
             if not (self.state_dir / "baseline.json").exists():
                 raise ExecutionUnavailable(
                     "Previous sandbox import was interrupted. Start a new session."
@@ -194,9 +200,9 @@ class CubeBackend:
                 f"/sandboxes/{self.sandbox_id}/timeout",
                 json={"timeout": self.config.sandbox_timeout},
             )
-            previous = saved.get("active_execution_id")
             if previous:
                 await self._end_execution(str(previous), "cancel_execution")
+            self._check_cancel()
             complete = bool(saved.get("import_complete"))
             await self._begin_execution(import_complete=complete)
             if not complete:
@@ -250,11 +256,17 @@ class CubeBackend:
             raise
 
     async def _begin_execution(self, *, import_complete: bool = True) -> None:
+        self._check_cancel()
+        # Record initialization intent before dispatch, even when its response is lost.
+        self._active_execution_id = self._execution_id
+        self._save(import_complete=import_complete)
         value = await self._worker("initialize_execution", {})
+        self._check_cancel()
         if not value.get("initialized"):
             raise ExecutionUnavailable("Sandbox cannot provide managed task cancellation")
         self._active_execution_id = self._execution_id
         self._prepared = True
+        self._cancel_unconfirmed = False
         self._save(import_complete=import_complete)
 
     async def _import_project(self, baseline: dict[str, Any]) -> None:
@@ -275,17 +287,24 @@ class CubeBackend:
             raise ExecutionUnavailable("Task process termination could not be confirmed")
 
     async def cancel_run(self) -> None:
+        self._cancel_requested = True
         async with self._cancel_lock:
             if not self._data or self._cancelled:
                 return
             started = time.monotonic()
             await self._emit("sandbox.cancel_requested", "cancel")
             try:
-                await self._end_execution(self._execution_id, "cancel_execution")
+                # Reconnect may be interrupted before the persisted previous run is stopped.
+                for execution_id in dict.fromkeys(
+                    [
+                        self._active_execution_id or self._execution_id,
+                        self._execution_id,
+                    ]
+                ):
+                    await self._end_execution(execution_id, "cancel_execution")
             except ExecutionUnavailable:
                 self._broken = True
                 self._cancel_unconfirmed = True
-                self._active_execution_id = self._execution_id
                 self._save(import_complete=self._import_complete)
                 await self._emit(
                     "sandbox.cancel_failed",
@@ -468,6 +487,8 @@ class CubeBackend:
     async def _worker(
         self, action: str, params: dict[str, Any], *, execution_id: str | None = None
     ) -> Any:
+        if action not in ("cancel_execution", "finish_execution"):
+            self._check_cancel()
         request = base64.b64encode(
             json.dumps(
                 {
@@ -533,14 +554,12 @@ class CubeBackend:
             ) from exc
 
     async def invoke(self, name: str, params: dict[str, object]) -> ToolResult:
-        if self._cancelled:
-            raise asyncio.CancelledError()
+        self._check_cancel()
         started = time.monotonic()
         await self._emit("sandbox.using", "execute", tool_name=name)
         try:
             value = await self._worker(name, params)
-            if self._cancelled:
-                raise asyncio.CancelledError()
+            self._check_cancel()
         except ExecutionUnavailable:
             await self._emit(
                 "sandbox.failed",
@@ -555,6 +574,10 @@ class CubeBackend:
             is_error=bool(value.get("is_error")),
             error_type=value.get("error_type"),
         )
+
+    def _check_cancel(self) -> None:
+        if self._cancel_requested:
+            raise asyncio.CancelledError()
 
     async def export(self) -> Any:
         await self._emit("sandbox.using", "export")

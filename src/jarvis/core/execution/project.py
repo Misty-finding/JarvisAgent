@@ -358,6 +358,9 @@ def make_review(state_dir: Path, exported: Any, config: ExecutionConfig) -> dict
     after = validate_export(exported, config)
     changes = []
     for name in sorted(before.keys() | after.keys()):
+        # Filtering exported bytes is not evidence that an existing file was removed.
+        if excluded(name, config.exclude):
+            continue
         old = before.get(name)
         new = after.get(name)
         if (

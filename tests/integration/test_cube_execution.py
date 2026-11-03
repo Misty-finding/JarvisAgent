@@ -188,9 +188,21 @@ async def test_real_network_and_cancellation(cube_config: JarvisConfig) -> None:
         result = await backend.invoke("bash", {"command": probe})
         assert "blocked" in result.content
         task = asyncio.create_task(backend.invoke("bash", {
-            "command": "setsid sh -c 'sleep 8; touch should-not-exist' >/dev/null 2>&1 & touch keep; sleep 100"
+            "command": "setsid sh -c 'echo $$ > orphan.pid; sleep 100; touch should-not-exist' "
+            ">/dev/null 2>&1 & touch keep; sleep 100"
         }))
-        await asyncio.sleep(2)
+        # Transport startup can exceed two seconds. Cancel only after the task and
+        # detached child have actually started, so this verifies termination.
+        async with asyncio.timeout(60):
+            while True:
+                ready = await backend.invoke("bash", {
+                    "command": "test -e keep && test -s orphan.pid"
+                })
+                if not ready.is_error:
+                    break
+                if task.done():
+                    pytest.fail(f"Long-running command ended before readiness: {await task}")
+                await asyncio.sleep(0.1)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -203,7 +215,14 @@ async def test_real_network_and_cancellation(cube_config: JarvisConfig) -> None:
         await resumed.prepare()
         assert resumed.sandbox_id == backend.sandbox_id
         check = await resumed.invoke("bash", {
-            "command": "sleep 8; test -e keep && test ! -e should-not-exist && test $(id -u) = 1000"
+            "command": "python - <<'PY'\nfrom pathlib import Path\nimport os\n"
+            "assert Path('keep').exists(), 'Cancellation lost the workspace file'\n"
+            "assert not Path('should-not-exist').exists(), 'Detached child completed'\n"
+            "assert os.getuid() == 1000, 'Task ran with the wrong identity'\n"
+            "pid = int(Path('orphan.pid').read_text())\n"
+            "status = Path(f'/proc/{pid}/stat')\n"
+            "assert not status.exists() or status.read_text().rsplit(')', 1)[1].split()[0] == 'Z', "
+            "'Detached child survived cancellation'\nPY"
         })
         assert not check.is_error, check.content
         await resumed.release()
@@ -258,6 +277,48 @@ async def test_real_session_cancel_terminates_remote_command(cube_config: Jarvis
         await asyncio.gather(task, return_exceptions=True)
         if backend.sandbox_id:
             await backend.destroy(reason="verification_cleanup")
+
+
+async def test_cancel_reconnect_keeps_edits_and_stops_previous_run(
+    cube_config: JarvisConfig, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = cube_config
+    state_dir = config.workspace / ".jarvis" / "reconnect"
+    original = CubeBackend(config.execution, config.workspace, state_dir)
+    await original.prepare()
+    try:
+        result = await original.invoke("bash", {"command": (
+            "test $(id -u) = 1000 && grep -q 'NoNewPrivs:[[:space:]]*1' /proc/self/status && "
+            "printf 'session edit\\n' > calc.py; "
+            "setsid sh -c 'sleep 12; touch orphan-finished' >/dev/null 2>&1 &"
+        )})
+        assert not result.is_error, result.content
+        reconnecting = CubeBackend(config.execution, config.workspace, state_dir)
+        connected = asyncio.Event()
+
+        async def connecting(*args: Any, **kwargs: Any) -> Any:
+            connected.set()
+            await asyncio.Event().wait()
+
+        monkeypatch.setattr(reconnecting, "_control", connecting)
+        pending = asyncio.create_task(reconnecting.prepare())
+        async with asyncio.timeout(5):
+            await connected.wait()
+            pending.cancel()
+            await asyncio.gather(pending, return_exceptions=True)
+        await reconnecting.cancel_run()
+        assert json.loads((state_dir / "sandbox.json").read_text())["import_complete"]
+        resumed = CubeBackend(config.execution, config.workspace, state_dir)
+        await resumed.prepare()
+        assert resumed.sandbox_id == original.sandbox_id
+        edited = await resumed.invoke("read_file", {"path": "calc.py"})
+        assert edited.content == "session edit\n", "Reconnect must preserve the modified file"
+        result = await resumed.invoke("bash", {"command": "sleep 12; test ! -e orphan-finished"})
+        assert not result.is_error, result.content
+        assert (config.workspace / "calc.py").read_text().endswith("return a - b\n")
+        await resumed.release()
+    finally:
+        await original.destroy(reason="verification_cleanup")
 
 
 async def test_real_lifecycle_reaches_bus_thread_trace_and_ipc(

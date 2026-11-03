@@ -127,6 +127,15 @@ def test_export_collision_secret_and_size_limits() -> None:
         validate_export([item("code.py", 'api_key="abcdefghijklmnop12345678"')], ExecutionConfig())
 
 
+def test_new_exclusion_is_not_interpreted_as_remote_deletion(tmp_path: Path) -> None:
+    (tmp_path / "code.py").write_text("original\n")
+    state = tmp_path / ".jarvis" / "execution"
+    save_private(state / "baseline.json", collect_project(tmp_path, ExecutionConfig()))
+    config = ExecutionConfig(exclude=["code.py"])
+    review = make_review(state, [item("code.py", "remote edit\n")], config)
+    assert review["changes"] == [], "Excluded baseline files must never become deletion candidates"
+
+
 def test_import_excludes_core_data_and_secrets(tmp_path: Path) -> None:
     (tmp_path / ".jarvis").mkdir()
     (tmp_path / ".jarvis" / "session.json").write_text("private session")
